@@ -5,11 +5,14 @@ saved snapshot; they never fetch live data or recalculate probabilities.
 """
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import asdict
 from datetime import date
-from typing import Any
+from math import isfinite
+from typing import Any, Mapping
 
 from forecasting import baseball_projection, probability_recommendations, score_projection
-from models import DailySnapshot, Event, EventAnalysis, Projection, Recommendation, utc_now_iso
+from models import DailySnapshot, Event, EventAnalysis, Market, Projection, Recommendation, utc_now_iso
 from providers import (
     FOOTBALL_LEAGUES,
     ProviderError,
@@ -232,3 +235,116 @@ def save_snapshot(store: SnapshotStore, snapshot: DailySnapshot) -> None:
     if not snapshot.events:
         raise ProviderError("空賽程不可覆蓋已保存快照")
     store.save_automatic(snapshot.sport, snapshot.date_key, snapshot.as_dict())
+
+
+def _projection_from_saved_payload(payload: Mapping[str, Any]) -> Projection:
+    """Restore the small, stable projection contract from a saved snapshot.
+
+    Manual calibration deliberately does *not* fetch a provider or rebuild the
+    team model.  It reuses the already saved pre-match model and recalculates
+    the two probabilities that depend on a real handicap / total line.
+    """
+
+    try:
+        draw = payload.get("draw")
+        return Projection(
+            home_expected=float(payload["home_expected"]),
+            away_expected=float(payload["away_expected"]),
+            home_win=float(payload["home_win"]),
+            draw=None if draw is None else float(draw),
+            away_win=float(payload["away_win"]),
+            score=str(payload["score"]),
+            score_probability=float(payload["score_probability"]),
+            source_quality=str(payload["source_quality"]),
+            notes=tuple(str(note) for note in payload.get("notes", ())),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProviderError("已保存快照缺少可用模型資料，不能用人工盤口製造機率") from exc
+
+
+def _manual_line(value: Any, label: str) -> float:
+    """Validate a numeric line before it can be labelled as an actual line."""
+
+    try:
+        line = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ProviderError(f"{label}必須是數字") from exc
+    if not isfinite(line):
+        raise ProviderError(f"{label}必須是有限數字")
+    return line
+
+
+def apply_manual_calibration(
+    automatic_snapshot: Mapping[str, Any],
+    lines_by_event: Mapping[str, tuple[float, float]],
+    *,
+    calibrated_at: str | None = None,
+) -> dict[str, Any]:
+    """Create a separately published, manually calibrated snapshot.
+
+    ``lines_by_event`` contains the home team's handicap then the game total.
+    Every event must be calibrated.  This prevents a partly corrected slate
+    from being presented as a complete "人工校正正式推薦" release.
+
+    The automatic snapshot is never mutated.  A later automatic refresh can
+    therefore be saved without replacing a manual member release.
+    """
+
+    sport = str(automatic_snapshot.get("sport", ""))
+    if sport not in {"mlb", "football"}:
+        raise ProviderError("人工校正只支援 MLB 或歐洲足球快照")
+    events = automatic_snapshot.get("events")
+    if not isinstance(events, list) or not events:
+        raise ProviderError("尚無可人工校正的完整自動快照")
+
+    expected_ids: list[str] = []
+    for item in events:
+        if not isinstance(item, Mapping):
+            raise ProviderError("已保存快照格式不完整，請重新建立自動快照")
+        event = item.get("event")
+        if not isinstance(event, Mapping) or not event.get("event_id"):
+            raise ProviderError("已保存快照缺少賽事識別，請重新建立自動快照")
+        if not isinstance(item.get("projection"), Mapping):
+            raise ProviderError("有賽事缺少球隊模型資料，不能靠人工盤口產生推薦")
+        expected_ids.append(str(event["event_id"]))
+    if set(lines_by_event) != set(expected_ids):
+        raise ProviderError("每一場都必須填入主隊讓分與大小總分後才能發布人工校正版本")
+
+    when = calibrated_at or utc_now_iso()
+    updated = deepcopy(dict(automatic_snapshot))
+    updated_events = updated["events"]
+    for item in updated_events:
+        event = item["event"]
+        event_id = str(event["event_id"])
+        raw_spread, raw_total = lines_by_event[event_id]
+        spread = _manual_line(raw_spread, f"{event.get('home', '主隊')}讓分")
+        total = _manual_line(raw_total, f"{event.get('away', '客隊')} vs {event.get('home', '主隊')}大小總分")
+        if total <= 0:
+            raise ProviderError("大小總分必須大於 0")
+        projection = _projection_from_saved_payload(item["projection"])
+        market = Market("管理員人工校正盤口", when, spread_line=spread, total_line=total)
+        item["market"] = asdict(market)
+        item["recommendations"] = [
+            asdict(recommendation)
+            for recommendation in probability_recommendations(projection, market, sport=sport)
+        ]
+        warnings = [
+            str(warning) for warning in item.get("warnings", ())
+            if "缺少的讓分／大小線" not in str(warning)
+        ]
+        warnings.append(f"人工校正盤口：主隊讓分 {spread:+g}｜大小 {total:g}")
+        item["warnings"] = warnings
+        item["manual_calibration"] = {
+            "home_spread": spread,
+            "total": total,
+            "calibrated_at": when,
+        }
+
+    summary = [str(item) for item in updated.get("source_summary", ())]
+    if "管理員人工校正讓分／大小線" not in summary:
+        summary.append("管理員人工校正讓分／大小線")
+    updated["source_summary"] = summary
+    updated["manual_calibrated_at"] = when
+    updated["release_type"] = "manual_calibrated"
+    updated["version"] = "restart-v2.1-manual-calibration"
+    return updated
