@@ -193,41 +193,60 @@ def _api_football(path: str, params: dict[str, Any]) -> Any:
     payload = _get(f"{API_FOOTBALL_URL}/{path}", headers=_api_football_headers(), params=params)
     errors = payload.get("errors") or {}
     if errors:
-        raise ProviderError("API-Football 暫時無法回應；請在後台稍後重試")
+        # API-Football returns useful non-secret details for quota, plan and
+        # invalid-request failures.  Keeping that detail in the administrator
+        # message makes the problem actionable, without ever exposing the key.
+        detail = "; ".join(str(value) for value in errors.values() if value)
+        suffix = f"（{detail}）" if detail else ""
+        raise ProviderError(f"API-Football 無法提供資料{suffix}")
     return payload.get("response", [])
 
 
 def fetch_football_events(day: date) -> list[Event]:
-    season = football_season(day)
+    """Get a day's fixtures once, then keep only the supported competitions.
+
+    The former implementation made six league-specific API calls.  On a
+    no-fixture day, one quota or plan error made the whole day look like a
+    partial outage.  A single date query is both faster and unambiguous: it
+    either succeeds for the day's accessible fixtures or returns one precise
+    provider error.  League filtering remains local so members still see only
+    the supported European top competitions.
+    """
+
+    try:
+        fixtures = _api_football("fixtures", {"date": day.isoformat()})
+    except ProviderError as exc:
+        raise ProviderError(
+            f"無法抓取 {day.isoformat()} 的歐洲足球賽程：{exc}；既有快照沒有被覆蓋"
+        ) from exc
+
+    supported = {league_id: league_name for league_name, (_, league_id) in FOOTBALL_LEAGUES.items()}
     events: list[Event] = []
-    failed_leagues = 0
-    for league_name, (_, league_id) in FOOTBALL_LEAGUES.items():
+    for item in fixtures:
+        league = item.get("league", {})
+        league_id = league.get("id")
         try:
-            fixtures = _api_football("fixtures", {"league": league_id, "season": season, "date": day.isoformat()})
-        except ProviderError:
-            # One league outage must not erase another league's saved slate.
-            failed_leagues += 1
+            league_id = int(league_id)
+        except (TypeError, ValueError):
             continue
-        for item in fixtures:
-            fixture = item.get("fixture", {})
-            status = fixture.get("status", {}).get("short")
-            if status in {"FT", "AET", "PEN", "CANC", "PST", "ABD"}:
-                continue
-            teams = item.get("teams", {})
-            home, away = teams.get("home", {}), teams.get("away", {})
-            if not home.get("name") or not away.get("name"):
-                continue
-            events.append(Event(
-                event_id=f"football:{fixture.get('id')}", sport="football", kickoff=fixture.get("date", ""),
-                home=home["name"], away=away["name"], league=league_name,
-                metadata={"league_id": league_id, "season": season,
-                          "home_team_id": home.get("id"), "away_team_id": away.get("id"),
-                          "fixture_id": fixture.get("id")},
-            ))
-    if not events and failed_leagues:
-        # If even one relevant league failed, an empty response is ambiguous:
-        # do not mistake a source outage for a genuine no-fixture day.
-        raise ProviderError("部分足球賽程暫時無法取得；為保護會員資料，既有快照沒有被覆蓋")
+        league_name = supported.get(league_id)
+        if not league_name:
+            continue
+        fixture = item.get("fixture", {})
+        status = fixture.get("status", {}).get("short")
+        if status in {"FT", "AET", "PEN", "CANC", "PST", "ABD"}:
+            continue
+        teams = item.get("teams", {})
+        home, away = teams.get("home", {}), teams.get("away", {})
+        if not home.get("name") or not away.get("name"):
+            continue
+        events.append(Event(
+            event_id=f"football:{fixture.get('id')}", sport="football", kickoff=fixture.get("date", ""),
+            home=home["name"], away=away["name"], league=league_name,
+            metadata={"league_id": league_id, "season": football_season(day),
+                      "home_team_id": home.get("id"), "away_team_id": away.get("id"),
+                      "fixture_id": fixture.get("id")},
+        ))
     return events
 
 
