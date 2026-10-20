@@ -9,7 +9,7 @@ import os
 import re
 import unicodedata
 import json
-from datetime import date
+from datetime import date, datetime, timedelta
 from time import sleep
 from typing import Any, Iterable, Mapping
 from urllib.error import HTTPError, URLError
@@ -203,25 +203,32 @@ def _api_football(path: str, params: dict[str, Any]) -> Any:
 
 
 def fetch_football_events(day: date) -> list[Event]:
-    """Get a day's fixtures once, then keep only the supported competitions.
+    """Get fixtures for one Taiwan calendar day, then filter locally.
 
-    The former implementation made six league-specific API calls.  On a
-    no-fixture day, one quota or plan error made the whole day look like a
-    partial outage.  A single date query is both faster and unambiguous: it
-    either succeeds for the day's accessible fixtures or returns one precise
-    provider error.  League filtering remains local so members still see only
-    the supported European top competitions.
+    API-Football's ``date`` parameter is a UTC date while the administrator
+    date picker and member table are explicitly Taiwan time.  A European
+    evening match on UTC 10/20 is already 10/21 in Taiwan.  Fetch the two UTC
+    dates which can overlap the chosen Taiwan day, then retain only kickoffs
+    whose Asia/Taipei date exactly matches ``day``.  This avoids both the old
+    six-call design and cross-day snapshots.
     """
 
-    try:
-        fixtures = _api_football("fixtures", {"date": day.isoformat()})
-    except ProviderError as exc:
-        raise ProviderError(
-            f"無法抓取 {day.isoformat()} 的歐洲足球賽程：{exc}；既有快照沒有被覆蓋"
-        ) from exc
+    from zoneinfo import ZoneInfo
+
+    fixtures: list[dict[str, Any]] = []
+    for utc_day in (day - timedelta(days=1), day):
+        try:
+            response = _api_football("fixtures", {"date": utc_day.isoformat()})
+        except ProviderError as exc:
+            raise ProviderError(
+                f"無法抓取 {day.isoformat()}（台灣）的歐洲足球賽程：{exc}；既有快照沒有被覆蓋"
+            ) from exc
+        fixtures.extend(item for item in response if isinstance(item, dict))
 
     supported = {league_id: league_name for league_name, (_, league_id) in FOOTBALL_LEAGUES.items()}
     events: list[Event] = []
+    seen_fixture_ids: set[str] = set()
+    taipei = ZoneInfo("Asia/Taipei")
     for item in fixtures:
         league = item.get("league", {})
         league_id = league.get("id")
@@ -233,6 +240,14 @@ def fetch_football_events(day: date) -> list[Event]:
         if not league_name:
             continue
         fixture = item.get("fixture", {})
+        fixture_id = str(fixture.get("id") or "")
+        kickoff = str(fixture.get("date") or "")
+        try:
+            kickoff_local = datetime.fromisoformat(kickoff.replace("Z", "+00:00")).astimezone(taipei)
+        except ValueError:
+            continue
+        if kickoff_local.date() != day or not fixture_id or fixture_id in seen_fixture_ids:
+            continue
         status = fixture.get("status", {}).get("short")
         if status in {"FT", "AET", "PEN", "CANC", "PST", "ABD"}:
             continue
@@ -240,8 +255,9 @@ def fetch_football_events(day: date) -> list[Event]:
         home, away = teams.get("home", {}), teams.get("away", {})
         if not home.get("name") or not away.get("name"):
             continue
+        seen_fixture_ids.add(fixture_id)
         events.append(Event(
-            event_id=f"football:{fixture.get('id')}", sport="football", kickoff=fixture.get("date", ""),
+            event_id=f"football:{fixture_id}", sport="football", kickoff=kickoff,
             home=home["name"], away=away["name"], league=league_name,
             metadata={"league_id": league_id, "season": football_season(day),
                       "home_team_id": home.get("id"), "away_team_id": away.get("id"),

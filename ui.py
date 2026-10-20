@@ -9,14 +9,58 @@ from zoneinfo import ZoneInfo
 
 TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 
+# Display-only dictionary.  Provider names remain untouched in saved events so
+# market matching and model inputs keep using the canonical API names.
 TEAM_NAMES = {
-    "Manchester City": "曼城", "Manchester United": "曼聯", "Liverpool": "利物浦", "Arsenal": "阿森納",
-    "Chelsea": "切爾西", "Tottenham": "熱刺", "Newcastle": "紐卡索", "Aston Villa": "阿斯頓維拉",
-    "Real Madrid": "皇家馬德里", "Barcelona": "巴塞隆納", "Atlético Madrid": "馬德里競技",
-    "Athletic Club": "畢爾包競技", "Sevilla": "塞維利亞", "Valencia": "瓦倫西亞",
-    "Bayern Munich": "拜仁慕尼黑", "Borussia Dortmund": "多特蒙德", "Bayer Leverkusen": "勒沃庫森",
-    "Juventus": "尤文圖斯", "Inter": "國際米蘭", "AC Milan": "AC米蘭", "Napoli": "拿坡里",
-    "Paris Saint Germain": "巴黎聖日耳曼", "Paris Saint-Germain": "巴黎聖日耳曼", "Marseille": "馬賽",
+    # 英超
+    "Arsenal": "阿森納", "Aston Villa": "阿斯頓維拉", "Bournemouth": "伯恩茅斯",
+    "Brentford": "賓福特", "Brighton": "布萊頓", "Brighton & Hove Albion": "布萊頓",
+    "Burnley": "般尼", "Chelsea": "切爾西", "Crystal Palace": "水晶宮",
+    "Everton": "愛華頓", "Fulham": "富咸", "Leeds": "列斯聯", "Leeds United": "列斯聯",
+    "Liverpool": "利物浦", "Manchester City": "曼城", "Manchester United": "曼聯",
+    "Newcastle": "紐卡素", "Newcastle United": "紐卡素", "Nottingham Forest": "諾定咸森林",
+    "Sunderland": "新特蘭", "Tottenham": "熱刺", "Tottenham Hotspur": "熱刺",
+    "West Ham": "韋斯咸", "West Ham United": "韋斯咸", "Wolves": "狼隊", "Wolverhampton": "狼隊",
+    "Wolverhampton Wanderers": "狼隊", "Coventry": "高雲地利", "Coventry City": "高雲地利",
+    # 西甲
+    "Alaves": "阿拉維斯", "Deportivo Alavés": "阿拉維斯", "Athletic Club": "畢爾包競技",
+    "Athletic Bilbao": "畢爾包競技", "Atlético Madrid": "馬德里競技", "Atletico Madrid": "馬德里競技",
+    "Barcelona": "巴塞隆納", "Celta Vigo": "切爾達", "Celta de Vigo": "切爾達",
+    "Elche": "艾爾切", "Espanyol": "愛斯賓奴", "Getafe": "赫塔費", "Girona": "赫羅納",
+    "Levante": "利雲特", "Mallorca": "馬略卡", "Osasuna": "奧薩蘇納",
+    "Rayo Vallecano": "巴列卡諾", "Real Betis": "皇家貝迪斯", "Real Madrid": "皇家馬德里",
+    "Real Oviedo": "皇家奧維耶多", "Real Sociedad": "皇家蘇斯達", "Sevilla": "西維爾",
+    "Valencia": "華倫西亞", "Villarreal": "維拉利爾",
+    # 義甲
+    "AC Milan": "AC米蘭", "Milan": "AC米蘭", "Atalanta": "亞特蘭大", "Bologna": "博洛尼亞",
+    "Cagliari": "卡利亞里", "Como": "科木", "Cremonese": "克雷莫納", "Fiorentina": "費倫天拿",
+    "Genoa": "熱拿亞", "Hellas Verona": "維羅納", "Inter": "國際米蘭", "Inter Milan": "國際米蘭",
+    "Juventus": "祖雲達斯", "Lazio": "拉素", "Lecce": "萊切", "Monza": "蒙札", "Napoli": "拿玻里",
+    "Parma": "帕爾馬", "Pisa": "比薩", "Roma": "羅馬", "AS Roma": "羅馬", "Sassuolo": "薩斯索羅",
+    "Torino": "拖連奴", "Udinese": "烏甸尼斯", "Venezia": "威尼斯",
+    # 德甲
+    "Augsburg": "奧格斯堡", "Bayern Munich": "拜仁慕尼黑", "Bayer Leverkusen": "利華古遜",
+    "Borussia Dortmund": "多蒙特", "Borussia M'gladbach": "慕遜加柏", "Borussia Monchengladbach": "慕遜加柏",
+    "Eintracht Frankfurt": "法蘭克福", "FC Cologne": "科隆", "FC Köln": "科隆", "Freiburg": "弗賴堡",
+    "Hamburger SV": "漢堡", "Heidenheim": "海登咸", "Hoffenheim": "賀芬咸", "Mainz": "緬恩斯",
+    "Mainz 05": "緬恩斯", "RB Leipzig": "RB萊比錫", "St. Pauli": "聖保利", "St Pauli": "聖保利",
+    "Stuttgart": "史特加", "Union Berlin": "柏林聯", "Werder Bremen": "雲達不萊梅",
+    "Wolfsburg": "沃爾夫斯堡",
+    # 法甲
+    "Auxerre": "歐塞爾", "Brest": "比斯特", "Le Havre": "勒阿弗爾", "Lens": "朗斯", "Lille": "里爾",
+    "Lorient": "羅連安特", "Lyon": "里昂", "Marseille": "馬賽", "Metz": "梅斯", "Monaco": "摩納哥",
+    "Nantes": "南特", "Nice": "尼斯", "Paris FC": "巴黎FC", "Paris Saint Germain": "巴黎聖日耳曼",
+    "Paris Saint-Germain": "巴黎聖日耳曼", "PSG": "巴黎聖日耳曼", "Rennes": "雷恩",
+    "Strasbourg": "史特拉斯堡", "Toulouse": "圖盧茲",
+    # 歐冠與歐洲常見隊名
+    "Ajax": "阿積士", "Atletico Madrid": "馬德里競技", "Benfica": "賓菲加", "Celtic": "些路迪",
+    "Club Brugge": "布魯日", "Crvena Zvezda": "貝爾格萊德紅星", "Dinamo Zagreb": "薩格勒布戴拿模",
+    "Fenerbahce": "費倫巴治", "Fenerbahçe": "費倫巴治", "Galatasaray": "加拉塔沙雷",
+    "Maccabi Tel Aviv": "特拉維夫馬卡比", "Olympiacos": "奧林比亞高斯", "PSV Eindhoven": "PSV燕豪芬",
+    "FC Porto": "波圖", "Porto": "波圖", "Qarabag": "卡拉巴克", "Rangers": "格拉斯哥流浪",
+    "Sabah FA": "沙巴FA", "Slavia Praha": "布拉格斯拉維亞", "Slavia Prague": "布拉格斯拉維亞",
+    "Sporting CP": "士砵亭", "Sporting Lisbon": "士砵亭", "Shakhtar Donetsk": "薩克達",
+    "Sparta Praha": "布拉格斯巴達", "Young Boys": "年青人", "Bodø/Glimt": "博德閃耀",
 }
 
 
