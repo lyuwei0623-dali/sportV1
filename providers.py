@@ -55,7 +55,9 @@ def _get(url: str, *, headers: dict[str, str] | None = None, params: dict[str, A
     last_error: Exception | None = None
     for attempt in range(3):
         try:
-            request = Request(url + suffix, headers=headers or {})
+            request_headers = {"User-Agent": "Mozilla/5.0 (compatible; VidaliSports/1.0; +https://vidali-sports.streamlit.app)", "Accept": "application/json"}
+            request_headers.update(headers or {})
+            request = Request(url + suffix, headers=request_headers)
             with urlopen(request, timeout=HTTP_TIMEOUT) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
