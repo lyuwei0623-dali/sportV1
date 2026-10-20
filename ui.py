@@ -73,6 +73,20 @@ TEAM_NAMES = {
     "Phoenix Suns": "鳳凰城太陽", "Portland Trail Blazers": "波特蘭拓荒者", "Sacramento Kings": "沙加緬度國王",
     "San Antonio Spurs": "聖安東尼奧馬刺", "Toronto Raptors": "多倫多暴龍", "Utah Jazz": "猶他爵士",
     "Washington Wizards": "華盛頓巫師",
+    # MLB
+    "Arizona Diamondbacks": "亞利桑那響尾蛇", "Athletics": "運動家", "Boston Red Sox": "波士頓紅襪",
+    "Chicago Cubs": "芝加哥小熊", "Chicago White Sox": "芝加哥白襪", "Cincinnati Reds": "辛辛那提紅人",
+    "Cleveland Guardians": "克里夫蘭守護者", "Colorado Rockies": "科羅拉多洛磯", "Detroit Tigers": "底特律老虎",
+    "Houston Astros": "休士頓太空人", "Kansas City Royals": "堪薩斯市皇家", "Los Angeles Angels": "洛杉磯天使",
+    "Los Angeles Dodgers": "洛杉磯道奇", "Miami Marlins": "邁阿密馬林魚", "Milwaukee Brewers": "密爾瓦基釀酒人",
+    "Minnesota Twins": "明尼蘇達雙城", "New York Mets": "紐約大都會", "New York Yankees": "紐約洋基",
+    "Philadelphia Phillies": "費城費城人", "Pittsburgh Pirates": "匹茲堡海盜", "San Diego Padres": "聖地牙哥教士",
+    "San Francisco Giants": "舊金山巨人", "Seattle Mariners": "西雅圖水手", "St. Louis Cardinals": "聖路易紅雀",
+    "Tampa Bay Rays": "坦帕灣光芒", "Texas Rangers": "德州遊騎兵", "Toronto Blue Jays": "多倫多藍鳥",
+    "Washington Nationals": "華盛頓國民", "Baltimore Orioles": "巴爾的摩金鶯",
+    # 歐冠常見名稱補充
+    "Slovan Bratislava": "布拉迪斯拉發", "Pafos": "帕福斯", "Kairat Almaty": "阿拉木圖凱拉特",
+    "FC Copenhagen": "哥本哈根", "Olympique de Marseille": "馬賽", "Galatasaray SK": "加拉塔沙雷",
 }
 
 
