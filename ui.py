@@ -114,9 +114,6 @@ def _recommendation(value: dict[str, Any]) -> str:
         detail = reason or "尚無足夠資料"
     elif state == "model_reference":
         detail = f"{metric} {_pct(probability)}<br>非實際可下注盤口"
-    elif sport == "nba":
-        title = "NBA｜當日賽事分析"
-        headers = ["開賽（台灣）", "對戰", "模型預估得分", "賽果機率", "勝率最高", "讓分過盤率", "大小過盤率", "模型資料／風險"]
     else:
         detail = f"{metric} {_pct(probability)}"
     return (
@@ -149,6 +146,9 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
     if sport == "football":
         title = "歐洲足球｜當日賽事分析"
         headers = ["開賽（台灣）", "對戰", "預估進球", "主預測比分", "賽果機率", "勝率最高", "讓分過盤率", "大小過盤率", "模型資料／風險"]
+    elif sport == "nba":
+        title = "NBA｜當日賽事分析"
+        headers = ["開賽（台灣）", "對戰", "模型預估得分", "賽果機率", "勝率最高", "讓分過盤率", "大小過盤率", "模型資料／風險"]
     else:
         title = "MLB｜當日賽事分析"
         headers = ["開賽（台灣）", "對戰／先發", "模型預估得分", "賽果機率", "勝率最高", "讓分過盤率", "大小過盤率", "模型資料／風險"]
