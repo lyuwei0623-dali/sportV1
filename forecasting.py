@@ -85,6 +85,19 @@ def baseball_projection(home_rate: float, away_rate: float, quality: str) -> Pro
                       f"{score[0]}:{score[1]}", probability, quality)
 
 
+def _normal_cdf(value: float) -> float:
+    return .5 * (1 + math.erf(value / math.sqrt(2)))
+
+
+def basketball_projection(home_points: float, away_points: float, quality: str) -> Projection:
+    """NBA projection using scoring means and a conservative score-difference SD."""
+
+    difference = home_points - away_points
+    home_win = _normal_cdf(difference / 14.5)
+    return Projection(round(home_points, 1), round(away_points, 1), home_win, None, 1 - home_win,
+                      f"{round(home_points)}:{round(away_points)}", 0.0, quality)
+
+
 def _asian_components(line: float) -> tuple[float, ...]:
     """Split quarter Asian lines into half-stakes; leave other lines intact."""
 
@@ -149,6 +162,8 @@ def _line_source(actual_line: float | None, fallback_line: float, *, kind: str) 
 def probability_recommendations(projection: Projection, market: Market | None, *, sport: str) -> tuple[Recommendation, ...]:
     """Return one plain-language probability statement per required category."""
 
+    if sport == "nba":
+        return basketball_probability_recommendations(projection, market)
     matrix = score_matrix(projection.home_expected, projection.away_expected,
                           maximum=12 if sport == "mlb" else MAX_GOALS)
     labels = {"home": "主隊", "away": "客隊", "over": "大分", "under": "小分"}
@@ -189,4 +204,34 @@ def probability_recommendations(projection: Projection, market: Market | None, *
         "total", total_state, f"{labels[total_side]} {total_line:g}",
         total_probability, total_line, total_reason,
     )
+    return moneyline, spread, total
+
+
+def basketball_probability_recommendations(projection: Projection, market: Market | None) -> tuple[Recommendation, ...]:
+    """Direct NBA win / cover / total probabilities without odds prices."""
+
+    labels = {"home": "主隊", "away": "客隊", "over": "大分", "under": "小分"}
+    winner = "home" if projection.home_win >= projection.away_win else "away"
+    win_probability = projection.home_win if winner == "home" else projection.away_win
+    moneyline = Recommendation("moneyline", "model", f"{labels[winner]}勝", win_probability, None,
+                               "以球隊得失分與賽季勝率計算")
+    mean_diff = projection.home_expected - projection.away_expected
+    spread_state, spread_line, spread_reason = _line_source(
+        market.spread_line if market else None, -_round_to_step(mean_diff, .5), kind="spread"
+    )
+    home_cover = _normal_cdf((mean_diff + spread_line) / 14.5)
+    away_cover = _normal_cdf((-mean_diff - spread_line) / 14.5)
+    spread_probability, side = max((home_cover, "home"), (away_cover, "away"))
+    shown_line = spread_line if side == "home" else -spread_line
+    spread = Recommendation("spread", spread_state, f"{labels[side]} {shown_line:+g}", spread_probability,
+                            spread_line, spread_reason)
+    total_state, total_line, total_reason = _line_source(
+        market.total_line if market else None,
+        _round_to_step(projection.home_expected + projection.away_expected, .5), kind="total"
+    )
+    over_probability = 1 - _normal_cdf((total_line - (projection.home_expected + projection.away_expected)) / 18.5)
+    under_probability = 1 - over_probability
+    total_probability, total_side = max((over_probability, "over"), (under_probability, "under"))
+    total = Recommendation("total", total_state, f"{labels[total_side]} {total_line:g}", total_probability,
+                           total_line, total_reason)
     return moneyline, spread, total

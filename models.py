@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 
-Sport = Literal["mlb", "football"]
+Sport = Literal["mlb", "nba", "football"]
 
 
 @dataclass(frozen=True)

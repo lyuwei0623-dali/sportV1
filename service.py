@@ -11,7 +11,7 @@ from datetime import date
 from math import isfinite
 from typing import Any, Mapping
 
-from forecasting import baseball_projection, probability_recommendations, score_projection
+from forecasting import baseball_projection, basketball_projection, probability_recommendations, score_projection
 from models import DailySnapshot, Event, EventAnalysis, Market, Projection, Recommendation, utc_now_iso
 from providers import (
     FOOTBALL_LEAGUES,
@@ -23,6 +23,8 @@ from providers import (
     fetch_mlb_events,
     fetch_mlb_pitcher_profiles,
     fetch_mlb_team_profiles,
+    fetch_nba_events,
+    fetch_nba_team_profiles,
     fetch_odds,
     market_for_event,
 )
@@ -157,6 +159,22 @@ def _football_projection(event: Event, standings: dict[int, dict[int, dict[str, 
     return None
 
 
+def _nba_projection(event: Event, team_profiles: dict[int, dict[str, float]]) -> Projection | None:
+    """NBA score model from team scoring, defence and season win rate."""
+
+    home_id, away_id = event.metadata.get("home_team_id"), event.metadata.get("away_team_id")
+    home = team_profiles.get(int(home_id)) if home_id else None
+    away = team_profiles.get(int(away_id)) if away_id else None
+    if not home or not away or min(home.get("games", 0), away.get("games", 0)) < 3:
+        return None
+    home_rate = .58 * home["for"] + .42 * away["against"] + 1.8
+    away_rate = .58 * away["for"] + .42 * home["against"] - .4
+    home_rate *= _clamp(1 + (home.get("win_pct", .5) - .5) * .10, .94, 1.06)
+    away_rate *= _clamp(1 + (away.get("win_pct", .5) - .5) * .10, .94, 1.06)
+    return basketball_projection(_clamp(home_rate, 92, 132), _clamp(away_rate, 90, 130),
+                                 "NBA 團隊得失分＋賽季勝率資料")
+
+
 def build_mlb_snapshot(day: date) -> DailySnapshot:
     events = fetch_mlb_events(day)
     if not events:
@@ -184,6 +202,34 @@ def build_mlb_snapshot(day: date) -> DailySnapshot:
             warnings.append("缺少的讓分／大小線會顯示模型基準線，非實際可下注盤口")
         analyses.append(EventAnalysis(event, projection, market, recommendations, tuple(warnings)))
     return DailySnapshot("mlb", day.isoformat(), utc_now_iso(), tuple(analyses), tuple(notes))
+
+
+def build_nba_snapshot(day: date) -> DailySnapshot:
+    events = fetch_nba_events(day)
+    if not events:
+        raise ProviderError("當日沒有可建立的 NBA 賽事；未覆蓋既有快照")
+    team_profiles = fetch_nba_team_profiles(events, day)
+    notes = ["ESPN NBA 賽程、球隊得失分與賽季勝率"]
+    try:
+        odds = fetch_odds("basketball_nba", regions="us")
+        notes.append("The Odds API 讓分／大小線")
+    except ProviderError:
+        odds = []
+        notes.append("讓分／大小線暫不可用")
+    analyses: list[EventAnalysis] = []
+    for event in events:
+        market = market_for_event(event, odds)
+        projection = _nba_projection(event, team_profiles)
+        if projection is None:
+            analyses.append(EventAnalysis(event, None, market, _unavailable_recommendations(
+                "NBA 球隊得失分資料不足；拒絕產生虛構機率"), ("傷停與最終輪換仍待開賽前確認",)))
+            continue
+        recommendations = probability_recommendations(projection, market, sport="nba")
+        warnings = [f"模型資料：{projection.source_quality}", "傷停與最終輪換仍以開賽前公告為準"]
+        if market is None or market.spread_line is None or market.total_line is None:
+            warnings.append("缺少的讓分／大小線會顯示模型基準線，非實際可下注盤口")
+        analyses.append(EventAnalysis(event, projection, market, recommendations, tuple(warnings)))
+    return DailySnapshot("nba", day.isoformat(), utc_now_iso(), tuple(analyses), tuple(notes))
 
 
 def build_football_snapshot(day: date) -> DailySnapshot:
@@ -291,8 +337,8 @@ def apply_manual_calibration(
     """
 
     sport = str(automatic_snapshot.get("sport", ""))
-    if sport not in {"mlb", "football"}:
-        raise ProviderError("人工校正只支援 MLB 或歐洲足球快照")
+    if sport not in {"mlb", "nba", "football"}:
+        raise ProviderError("人工校正只支援 MLB、NBA 或歐洲足球快照")
     events = automatic_snapshot.get("events")
     if not isinstance(events, list) or not events:
         raise ProviderError("尚無可人工校正的完整自動快照")

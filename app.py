@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 from providers import ProviderError
-from service import apply_manual_calibration, build_football_snapshot, build_mlb_snapshot, save_snapshot
+from service import apply_manual_calibration, build_football_snapshot, build_mlb_snapshot, build_nba_snapshot, save_snapshot
 from storage import StorageError, create_store
 from ui import render_snapshot
 
@@ -190,8 +190,8 @@ def _manual_calibration_panel(st, store, automatic: dict, sport: str, day: str, 
 
 def _member_page(store) -> None:
     _brand()
-    sport_label = st.radio("賽事類別", ["MLB", "歐洲足球"], horizontal=True)
-    sport = "mlb" if sport_label == "MLB" else "football"
+    sport_label = st.radio("賽事類別", ["MLB", "NBA", "歐洲足球"], horizontal=True)
+    sport = {"MLB": "mlb", "NBA": "nba", "歐洲足球": "football"}[sport_label]
     selected = st.date_input("賽事日期（台灣）", _taiwan_day())
     snapshot, label = store.get_member_snapshot(sport, selected.isoformat())
     if not snapshot:
@@ -204,15 +204,16 @@ def _member_page(store) -> None:
 def _admin_page(store, storage_label: str) -> None:
     _brand()
     st.caption(f"儲存狀態：{storage_label}")
-    sport_label = st.radio("管理項目", ["MLB", "歐洲足球"], horizontal=True, key="admin_sport")
-    sport = "mlb" if sport_label == "MLB" else "football"
+    sport_label = st.radio("管理項目", ["MLB", "NBA", "歐洲足球"], horizontal=True, key="admin_sport")
+    sport = {"MLB": "mlb", "NBA": "nba", "歐洲足球": "football"}[sport_label]
     selected = st.date_input("建立哪一天的賽前快照", _taiwan_day(), key="admin_day")
     day = selected.isoformat()
     st.info("按下後由後台自動抓取賽程、球隊／球員資料與讓分／大小線；不需要手動輸入盤口。勝率永遠由模型資料產生；缺少實際讓分或大小線時，會明確顯示模型基準線，不會留白。")
     if st.button(f"建立並保存 {sport_label} 自動快照", type="primary"):
         try:
             with st.spinner("正在建立快照…"):
-                snapshot = build_mlb_snapshot(selected) if sport == "mlb" else build_football_snapshot(selected)
+                builders = {"mlb": build_mlb_snapshot, "nba": build_nba_snapshot, "football": build_football_snapshot}
+                snapshot = builders[sport](selected)
                 save_snapshot(store, snapshot)
             st.success(f"已保存 {len(snapshot.events)} 場 {sport_label} 賽事。自動快照現在已可供會員查詢。")
         except ProviderError as exc:
@@ -230,6 +231,7 @@ def _admin_page(store, storage_label: str) -> None:
         _manual_calibration_panel(st, store, automatic, sport, day, sport_label)
     with st.expander("資料來源與安全規則"):
         st.write("MLB：MLB Stats API（球隊打擊／投球、預定先發）＋ The Odds API（讓分／大小線）。")
+        st.write("NBA：ESPN（賽程、球隊得失分與賽季勝率）＋ The Odds API（讓分／大小線）。")
         st.write("足球：API-Football（賽程、主客場攻守、近期狀態、傷停）＋ The Odds API（讓分／大小線）。")
         st.write("機率由球隊／球員資料計算；市場只提供實際讓分與大小線。缺線時會標記模型基準線，絕不偽裝成實際可下注盤。")
 

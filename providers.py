@@ -25,6 +25,8 @@ API_FOOTBALL_URL = "https://v3.football.api-sports.io"
 MLB_SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule"
 MLB_TEAM_STATS_URL = "https://statsapi.mlb.com/api/v1/teams/{team_id}/stats"
 MLB_PERSON_STATS_URL = "https://statsapi.mlb.com/api/v1/people/{person_id}/stats"
+NBA_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+NBA_STANDINGS_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/standings"
 
 FOOTBALL_LEAGUES: dict[str, tuple[str, int]] = {
     "英超": ("soccer_epl", 39),
@@ -177,6 +179,69 @@ def fetch_mlb_pitcher_profiles(events: Iterable[Event], day: date) -> dict[int, 
     return profiles
 
 
+def fetch_nba_events(day: date) -> list[Event]:
+    """Read NBA schedule from ESPN's public scoreboard endpoint."""
+
+    payload = _get(NBA_SCOREBOARD_URL, params={"dates": day.strftime("%Y%m%d"), "limit": 100})
+    events: list[Event] = []
+    for item in payload.get("events", []):
+        status = ((item.get("status") or {}).get("type") or {}).get("name", "")
+        if status == "STATUS_FINAL":
+            continue
+        competition = (item.get("competitions") or [{}])[0]
+        competitors = competition.get("competitors") or []
+        home = next((row for row in competitors if row.get("homeAway") == "home"), {})
+        away = next((row for row in competitors if row.get("homeAway") == "away"), {})
+        home_team, away_team = home.get("team") or {}, away.get("team") or {}
+        if not home_team.get("displayName") or not away_team.get("displayName"):
+            continue
+        events.append(Event(
+            event_id=f"nba:{item.get('id')}", sport="nba", kickoff=str(item.get("date") or ""),
+            home=str(home_team["displayName"]), away=str(away_team["displayName"]), league="NBA",
+            metadata={"home_team_id": home_team.get("id"), "away_team_id": away_team.get("id")},
+        ))
+    return events
+
+
+def _nba_standings(season: int) -> dict[int, dict[str, float]]:
+    payload = _get(NBA_STANDINGS_URL, params={"dates": season, "limit": 100})
+    result: dict[int, dict[str, float]] = {}
+    for group in payload.get("children", []):
+        entries = ((group.get("standings") or {}).get("entries") or [])
+        for entry in entries:
+            team = entry.get("team") or {}
+            team_id = _number(team.get("id"))
+            values = {str(stat.get("name")): _number(stat.get("value")) for stat in entry.get("stats", [])}
+            wins, losses = values.get("wins") or 0.0, values.get("losses") or 0.0
+            games = wins + losses
+            points_for = values.get("avgPointsFor") or values.get("pointsFor")
+            points_against = values.get("avgPointsAgainst") or values.get("pointsAgainst")
+            if team_id is None or not games or points_for is None or points_against is None:
+                continue
+            if points_for > 200:  # totals rather than averages
+                points_for /= games
+            if points_against > 200:
+                points_against /= games
+            result[int(team_id)] = {"games": games, "for": points_for, "against": points_against,
+                                    "win_pct": wins / games}
+    return result
+
+
+def fetch_nba_team_profiles(events: Iterable[Event], day: date) -> dict[int, dict[str, float]]:
+    """Use current NBA standings; opening week safely falls back to last season."""
+
+    season = day.year if day.month >= 7 else day.year - 1
+    current = _nba_standings(season)
+    needed = {int(event.metadata[key]) for event in events for key in ("home_team_id", "away_team_id")
+              if event.metadata.get(key)}
+    if any(current.get(team_id, {}).get("games", 0) < 3 for team_id in needed):
+        previous = _nba_standings(season - 1)
+        for team_id in needed:
+            if current.get(team_id, {}).get("games", 0) < 3 and team_id in previous:
+                current[team_id] = previous[team_id]
+    return {team_id: current[team_id] for team_id in needed if team_id in current}
+
+
 def football_season(day: date) -> int:
     """European seasons are identified by their starting calendar year."""
     return day.year if day.month >= 7 else day.year - 1
@@ -316,6 +381,49 @@ def _team_stat_profile(payload: dict[str, Any], context: str) -> dict[str, float
     }
 
 
+def _recent_fixture_profile(team_id: int) -> dict[str, dict[str, float]]:
+    """Build home/away profiles from a team's recent completed fixtures.
+
+    UEFA competitions can have too few matches for ``teams/statistics`` early
+    in a season.  This remains API-Football-only: it derives the same attack,
+    defence and form inputs from real completed matches, never a fixed prior.
+    """
+
+    response = _api_football("fixtures", {"team": team_id, "last": 8})
+    buckets: dict[str, list[tuple[int, int, str]]] = {"home": [], "away": []}
+    for item in response:
+        fixture = item.get("fixture", {})
+        if fixture.get("status", {}).get("short") not in {"FT", "AET", "PEN"}:
+            continue
+        teams, goals = item.get("teams", {}), item.get("goals", {})
+        home_id, away_id = (teams.get("home") or {}).get("id"), (teams.get("away") or {}).get("id")
+        home_goals, away_goals = _number(goals.get("home")), _number(goals.get("away"))
+        if home_goals is None or away_goals is None:
+            continue
+        if home_id == team_id:
+            buckets["home"].append((int(home_goals), int(away_goals), "W" if home_goals > away_goals else "D" if home_goals == away_goals else "L"))
+        elif away_id == team_id:
+            buckets["away"].append((int(away_goals), int(home_goals), "W" if away_goals > home_goals else "D" if away_goals == home_goals else "L"))
+
+    profiles: dict[str, dict[str, float]] = {}
+    for context, matches in buckets.items():
+        played = len(matches)
+        if not played:
+            continue
+        scored = sum(row[0] for row in matches)
+        conceded = sum(row[1] for row in matches)
+        points = sum({"W": 3, "D": 1}.get(row[2], 0) for row in matches)
+        clean = sum(1 for _, against, _ in matches if against == 0)
+        failed = sum(1 for scored, _, _ in matches if scored == 0)
+        profiles[context] = {
+            "played": float(played), "for_average": scored / played, "against_average": conceded / played,
+            "clean_sheets": float(clean), "failed_to_score": float(failed),
+            "clean_sheet_rate": clean / played, "failed_to_score_rate": failed / played,
+            "form_ratio": points / (3 * played),
+        }
+    return profiles
+
+
 def fetch_football_team_profiles(events: Iterable[Event]) -> dict[tuple[int, int, int, str], dict[str, float]]:
     """Fetch team home/away statistics, cached for every unique team/league."""
 
@@ -331,10 +439,22 @@ def fetch_football_team_profiles(events: Iterable[Event]) -> dict[tuple[int, int
                 try:
                     response = _api_football("teams/statistics", {"league": league_id, "season": season, "team": team_id})
                     raw = response if isinstance(response, Mapping) else (response[0] if response else {})
-                    profiles[(league_id, season, team_id, "home")] = _team_stat_profile(raw, "home")
-                    profiles[(league_id, season, team_id, "away")] = _team_stat_profile(raw, "away")
+                    home_profile, away_profile = _team_stat_profile(raw, "home"), _team_stat_profile(raw, "away")
                 except ProviderError:
-                    continue
+                    home_profile, away_profile = {}, {}
+                if home_profile.get("played", 0) < 3 or away_profile.get("played", 0) < 3:
+                    try:
+                        recent = _recent_fixture_profile(team_id)
+                    except ProviderError:
+                        recent = {}
+                    if home_profile.get("played", 0) < 3 and recent.get("home", {}).get("played", 0) >= 3:
+                        home_profile = recent["home"]
+                    if away_profile.get("played", 0) < 3 and recent.get("away", {}).get("played", 0) >= 3:
+                        away_profile = recent["away"]
+                if home_profile:
+                    profiles[(league_id, season, team_id, "home")] = home_profile
+                if away_profile:
+                    profiles[(league_id, season, team_id, "away")] = away_profile
     return profiles
 
 
@@ -365,7 +485,7 @@ def fetch_football_injury_counts(events: Iterable[Event]) -> dict[str, dict[str,
     return counts
 
 
-def fetch_odds(sport_key: str) -> list[dict[str, Any]]:
+def fetch_odds(sport_key: str, *, regions: str | None = None) -> list[dict[str, Any]]:
     """Fetch lines only.
 
     The Odds API response contains prices, but this app intentionally ignores
@@ -377,7 +497,7 @@ def fetch_odds(sport_key: str) -> list[dict[str, Any]]:
     if not key:
         raise ProviderError("尚未設定 THE_ODDS_API_KEY")
     return _get(ODDS_URL.format(sport=sport_key), params={
-        "apiKey": key, "regions": os.environ.get("ODDS_REGIONS", "eu"),
+        "apiKey": key, "regions": regions or os.environ.get("ODDS_REGIONS", "eu"),
         "markets": "spreads,totals", "dateFormat": "iso",
     })
 
