@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from time import sleep
 from typing import Any, Iterable, Mapping
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from models import Event, Market
@@ -64,7 +64,8 @@ def _get(url: str, *, headers: dict[str, str] | None = None, params: dict[str, A
             # Retry quota / gateway errors, but never conceal a 400 / 401 / 403
             # configuration problem by wasting time on the same request.
             if exc.code not in {429, 500, 502, 503, 504}:
-                raise ProviderError("資料來源拒絕請求；請檢查金鑰與設定") from exc
+                host = urlparse(url).netloc or "資料來源"
+                raise ProviderError(f"{host} 回傳 HTTP {exc.code}；請檢查該來源設定") from exc
             last_error = exc
         except (URLError, TimeoutError, ValueError, OSError) as exc:
             last_error = exc
