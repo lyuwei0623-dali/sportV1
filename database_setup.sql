@@ -1,7 +1,7 @@
 -- 維大力體育APP Restart：只執行一次。
 -- 使用 Supabase SQL Editor 執行；不需要也不應把資料庫密碼貼入此檔。
 create table if not exists public.vd_daily_snapshots (
-  sport text not null check (sport in ('mlb', 'football')),
+  sport text not null check (sport in ('mlb', 'nba', 'football')),
   date_key date not null,
   automatic_payload jsonb,
   automatic_at timestamptz,
