@@ -25,8 +25,10 @@ API_FOOTBALL_URL = "https://v3.football.api-sports.io"
 MLB_SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule"
 MLB_TEAM_STATS_URL = "https://statsapi.mlb.com/api/v1/teams/{team_id}/stats"
 MLB_PERSON_STATS_URL = "https://statsapi.mlb.com/api/v1/people/{person_id}/stats"
-NBA_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
-NBA_STANDINGS_URL = "https://site.api.espn.com/apis/v2/sports/basketball/nba/standings"
+# ESPN's web host serves the same public NBA schedule and standings JSON but
+# does not reject the cloud runtime that blocks the legacy site.api host.
+NBA_SCOREBOARD_URL = "https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+NBA_STANDINGS_URL = "https://site.web.api.espn.com/apis/v2/sports/basketball/nba/standings"
 
 FOOTBALL_LEAGUES: dict[str, tuple[str, int]] = {
     "英超": ("soccer_epl", 39),
