@@ -13,3 +13,9 @@ create table if not exists public.vd_daily_snapshots (
 alter table public.vd_daily_snapshots enable row level security;
 -- 會員瀏覽器不直接讀 Supabase；只有 Streamlit server 使用 Service Role Key。
 revoke all on table public.vd_daily_snapshots from anon, authenticated;
+
+
+-- 已建立舊版資料庫時，也可安全重新執行本檔以加入 NBA 類別。
+alter table public.vd_daily_snapshots drop constraint if exists vd_daily_snapshots_sport_check;
+alter table public.vd_daily_snapshots
+  add constraint vd_daily_snapshots_sport_check check (sport in ('mlb', 'nba', 'football'));
