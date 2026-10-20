@@ -26,7 +26,7 @@ MLB_SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule"
 MLB_TEAM_STATS_URL = "https://statsapi.mlb.com/api/v1/teams/{team_id}/stats"
 MLB_PERSON_STATS_URL = "https://statsapi.mlb.com/api/v1/people/{person_id}/stats"
 NBA_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
-NBA_STANDINGS_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/standings"
+NBA_STANDINGS_URL = "https://site.api.espn.com/apis/v2/sports/basketball/nba/standings"
 
 FOOTBALL_LEAGUES: dict[str, tuple[str, int]] = {
     "英超": ("soccer_epl", 39),
