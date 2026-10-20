@@ -426,6 +426,33 @@ def _recent_fixture_profile(team_id: int) -> dict[str, dict[str, float]]:
     return profiles
 
 
+def _domestic_team_profiles(team_id: int, season: int) -> tuple[dict[str, float], dict[str, float]]:
+    """Use the team's domestic-league split when a UEFA competition is too small.
+
+    Champions League samples are often fewer than three home/away matches.
+    The API's own domestic league statistics provide a real current-season
+    alternative; no fixed league prior or bookmaker probability is used.
+    """
+
+    competitions = _api_football("leagues", {"team": team_id, "season": season})
+    candidates: list[int] = []
+    for item in competitions:
+        league = item.get("league") or {}
+        country = item.get("country") or {}
+        league_id = _number(league.get("id"))
+        if (str(league.get("type", "")).lower() == "league"
+                and str(country.get("name", "")).lower() not in {"world", "europe"}
+                and league_id is not None):
+            candidates.append(int(league_id))
+    for league_id in candidates:
+        response = _api_football("teams/statistics", {"league": league_id, "season": season, "team": team_id})
+        raw = response if isinstance(response, Mapping) else (response[0] if response else {})
+        home, away = _team_stat_profile(raw, "home"), _team_stat_profile(raw, "away")
+        if home.get("played", 0) >= 3 and away.get("played", 0) >= 3:
+            return home, away
+    return {}, {}
+
+
 def fetch_football_team_profiles(events: Iterable[Event]) -> dict[tuple[int, int, int, str], dict[str, float]]:
     """Fetch team home/away statistics, cached for every unique team/league."""
 
@@ -444,6 +471,16 @@ def fetch_football_team_profiles(events: Iterable[Event]) -> dict[tuple[int, int
                     home_profile, away_profile = _team_stat_profile(raw, "home"), _team_stat_profile(raw, "away")
                 except ProviderError:
                     home_profile, away_profile = {}, {}
+                if (league_id == 2
+                        and (home_profile.get("played", 0) < 3 or away_profile.get("played", 0) < 3)):
+                    try:
+                        domestic_home, domestic_away = _domestic_team_profiles(team_id, season)
+                    except ProviderError:
+                        domestic_home, domestic_away = {}, {}
+                    if home_profile.get("played", 0) < 3 and domestic_home.get("played", 0) >= 3:
+                        home_profile = domestic_home
+                    if away_profile.get("played", 0) < 3 and domestic_away.get("played", 0) >= 3:
+                        away_profile = domestic_away
                 if home_profile.get("played", 0) < 3 or away_profile.get("played", 0) < 3:
                     try:
                         recent = _recent_fixture_profile(team_id)
