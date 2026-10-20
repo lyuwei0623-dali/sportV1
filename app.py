@@ -20,7 +20,7 @@ from storage import StorageError, create_store
 from ui import render_snapshot
 
 
-APP_NAME = "維大力體育APP"
+APP_NAME = "維大力體育"
 TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 SECRET_NAMES = (
     "APP_ADMIN_PASSWORD", "APP_MEMBER_PASSWORD", "SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY",
