@@ -109,7 +109,7 @@ def _pct(value: Any) -> str:
         return "—"
 
 
-def _recommendation(value: dict[str, Any]) -> str:
+def _recommendation(value: dict[str, Any], settlement: dict[str, Any] | None = None) -> str:
     """Render a direct probability card, never a price-based recommendation."""
 
     state = str(value.get("state", "unavailable"))
@@ -127,12 +127,15 @@ def _recommendation(value: dict[str, Any]) -> str:
     if probability is None:
         detail = reason or "尚無足夠資料"
     elif state == "model_reference":
-        detail = f"{metric} {_pct(probability)}<br>非實際可下注盤口"
+        detail = f"{metric} {_pct(probability)}<br>模型基準回測"
     else:
         detail = f"{metric} {_pct(probability)}"
+    outcome = (settlement or {}).get("outcome")
+    outcome_label = {"won": "✓ 命中", "lost": "✕ 未過盤", "push": "— 走盤／和局"}.get(outcome, "")
+    outcome_class = f" settled-{outcome}" if outcome else ""
     return (
-        f'<div class="pick {escape(state)}"><b>{escape(label)}</b><br>{escape(title)}'
-        f'<br><small>{detail}</small></div>'
+        f'<div class="pick {escape(state)}{outcome_class}"><b>{escape(label)}</b><br>{escape(title)}'
+        f'<br><small>{detail}</small>{f"<br><b>{outcome_label}</b>" if outcome_label else ""}</div>'
     )
 
 
@@ -145,7 +148,7 @@ def _style() -> str:
     .snapshot th {background:#edf4fa; color:#123a5d; padding:10px 8px; border-bottom:1px solid #d5e0ea; white-space:nowrap}
     .snapshot td {vertical-align:top; text-align:center; padding:10px 8px; border-bottom:1px solid #e6edf3; line-height:1.5}
     .snapshot tr:nth-child(even){background:#fbfdff}.snapshot .league-row td{text-align:left;background:#173f64;color:#fff;font-weight:700;padding:8px 10px}
-    .pick {border-radius:7px;padding:7px;min-width:138px}.pick small{color:#40566d}.pick.model,.pick.market_line{background:#eaf3ff;color:#174d7d}.pick.model_reference{background:#f4f1ff;color:#59408a}.pick.unavailable{background:#f1f5f9;color:#64748b}
+    .pick {border-radius:7px;padding:7px;min-width:138px}.pick small{color:#40566d}.pick.model,.pick.market_line{background:#eaf3ff;color:#174d7d}.pick.model_reference{background:#f4f1ff;color:#59408a}.pick.unavailable{background:#f1f5f9;color:#64748b}.pick.settled-won{background:#dcfce7!important;color:#166534!important;border:1px solid #86efac}.pick.settled-lost{background:#fee2e2!important;color:#991b1b!important;border:1px solid #fca5a5}.pick.settled-push{background:#fef3c7!important;color:#92400e!important;border:1px solid #fcd34d}.settlement-summary{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 14px}.settlement-stat{background:#f1f5f9;border-radius:8px;padding:7px 10px;color:#334155;font-size:13px}
     .warning {color:#795313;font-size:12px;max-width:230px}.member-note{color:#52677d;font-size:13px;margin:6px 0 13px}
     </style>
     """
@@ -159,24 +162,38 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
         return
     if sport == "football":
         title = "歐洲足球｜當日賽事分析"
-        headers = ["開賽（台灣）", "對戰", "預估進球", "主預測比分", "賽果機率", "勝率最高", "讓分過盤率", "大小過盤率", "模型資料／風險"]
+        headers = ["開賽（台灣）", "對戰", "預估進球", "主預測比分", "賽果機率", "最終比分", "勝率最高", "讓分過盤率", "大小過盤率", "模型資料／風險"]
     elif sport == "nba":
         title = "NBA｜當日賽事分析"
-        headers = ["開賽（台灣）", "對戰", "模型預估得分", "賽果機率", "勝率最高", "讓分過盤率", "大小過盤率", "模型資料／風險"]
+        headers = ["開賽（台灣）", "對戰", "模型預估得分", "賽果機率", "最終比分", "勝率最高", "讓分過盤率", "大小過盤率", "模型資料／風險"]
     else:
         title = "MLB｜當日賽事分析"
-        headers = ["開賽（台灣）", "對戰／先發", "模型預估得分", "賽果機率", "勝率最高", "讓分過盤率", "大小過盤率", "模型資料／風險"]
+        headers = ["開賽（台灣）", "對戰／先發", "模型預估得分", "賽果機率", "最終比分", "勝率最高", "讓分過盤率", "大小過盤率", "模型資料／風險"]
     html = [_style(), f'<div class="snapshot-title">{escape(title)}｜{escape(release_label)}</div>', '<div class="snapshot-wrap"><table class="snapshot"><thead><tr>']
     html.extend(f"<th>{escape(header)}</th>" for header in headers)
     html.append("</tr></thead><tbody>")
+    summary = snapshot.get("settlement_summary") or {}
+    if summary:
+        stats = []
+        for kind, label in (("moneyline", "獨贏"), ("spread", "讓分"), ("total", "大小")):
+            row = summary.get(kind, {})
+            won, lost, push = int(row.get("won", 0)), int(row.get("lost", 0)), int(row.get("push", 0))
+            decided = won + lost
+            rate = f"{won / decided * 100:.1f}%" if decided else "—"
+            stats.append(f'<div class="settlement-stat">{label}：{won} 綠／{lost} 紅／{push} 走｜命中率 <b>{rate}</b></div>')
+        html.insert(1, '<div class="settlement-summary">' + "".join(stats) + '</div>')
     current_league = None
     for item in events:
         event = item.get("event", {})
         projection = item.get("projection")
         recs = {entry.get("market_type"): entry for entry in item.get("recommendations", [])}
+        settled = item.get("settlement") or {}
+        pick_results = settled.get("picks") or {}
+        final_score = (f"主 {settled.get('home_score')}<br>客 {settled.get('away_score')}"
+                       if settled.get("status") == "final" else "尚未結束")
         if sport == "football" and event.get("league") != current_league:
             current_league = event.get("league")
-            html.append(f'<tr class="league-row"><td colspan="9">{escape(str(current_league))}</td></tr>')
+            html.append(f'<tr class="league-row"><td colspan="10">{escape(str(current_league))}</td></tr>')
         matchup = f"{display_team(str(event.get('away', '客隊')))}（客）<br>vs<br>{display_team(str(event.get('home', '主隊')))}（主）"
         warnings = "<br>".join(escape(str(entry)) for entry in item.get("warnings", [])) or "—"
         if projection:
@@ -185,25 +202,25 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
                 outcome = f"主 {_pct(projection.get('home_win'))}<br>和 {_pct(projection.get('draw'))}<br>客 {_pct(projection.get('away_win'))}"
                 score = f"{escape(str(projection.get('score','—')))}<br><small>命中機率 {_pct(projection.get('score_probability'))}</small>"
                 cells = [_time(event.get("kickoff", "")), matchup, expected, score, outcome,
-                         _recommendation(recs.get("moneyline", {})), _recommendation(recs.get("spread", {})),
-                         _recommendation(recs.get("total", {})), f'<span class="warning">{warnings}</span>']
+                         final_score, _recommendation(recs.get("moneyline", {}), pick_results.get("moneyline")), _recommendation(recs.get("spread", {}), pick_results.get("spread")),
+                         _recommendation(recs.get("total", {}), pick_results.get("total")), f'<span class="warning">{warnings}</span>']
             else:
                 outcome = f"主勝 {_pct(projection.get('home_win'))}<br>客勝 {_pct(projection.get('away_win'))}"
                 if sport == "mlb":
                     pitchers = event.get("metadata", {})
                     matchup += f"<br><small>客投：{escape(str(pitchers.get('away_pitcher','尚未確認')))}<br>主投：{escape(str(pitchers.get('home_pitcher','尚未確認')))}</small>"
                 cells = [_time(event.get("kickoff", "")), matchup, expected, outcome,
-                         _recommendation(recs.get("moneyline", {})), _recommendation(recs.get("spread", {})),
-                         _recommendation(recs.get("total", {})), f'<span class="warning">{warnings}</span>']
+                         final_score, _recommendation(recs.get("moneyline", {}), pick_results.get("moneyline")), _recommendation(recs.get("spread", {}), pick_results.get("spread")),
+                         _recommendation(recs.get("total", {}), pick_results.get("total")), f'<span class="warning">{warnings}</span>']
         else:
             unavailable = _recommendation(recs.get("moneyline", {}))
             if sport == "football":
-                cells = [_time(event.get("kickoff", "")), matchup, "—", "—", "—", unavailable,
-                         _recommendation(recs.get("spread", {})), _recommendation(recs.get("total", {})),
+                cells = [_time(event.get("kickoff", "")), matchup, "—", "—", "—", final_score, unavailable,
+                         _recommendation(recs.get("spread", {}), pick_results.get("spread")), _recommendation(recs.get("total", {}), pick_results.get("total")),
                          f'<span class="warning">{warnings}</span>']
             else:
-                cells = [_time(event.get("kickoff", "")), matchup, "—", "—", unavailable,
-                         _recommendation(recs.get("spread", {})), _recommendation(recs.get("total", {})),
+                cells = [_time(event.get("kickoff", "")), matchup, "—", "—", final_score, unavailable,
+                         _recommendation(recs.get("spread", {}), pick_results.get("spread")), _recommendation(recs.get("total", {}), pick_results.get("total")),
                          f'<span class="warning">{warnings}</span>']
         html.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
     html.append("</tbody></table></div>")
