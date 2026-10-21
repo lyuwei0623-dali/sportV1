@@ -332,8 +332,10 @@ def settle_snapshot(snapshot: Mapping[str, Any], *, results: Mapping[str, Mappin
                 line = rec.get("market_line")
                 if line is None:
                     continue
-                value = home + away - float(line)
-                outcome = _asian_settlement(value if selection.startswith("大分") else -value, 0.0)
+                score_total = home + away
+                outcome = (_asian_settlement(score_total, -float(line))
+                           if selection.startswith("大分")
+                           else _asian_settlement(-score_total, float(line)))
             picks[kind] = {"outcome": outcome, "source": state}
             summary[kind][outcome] += 1
         item["settlement"] = {
