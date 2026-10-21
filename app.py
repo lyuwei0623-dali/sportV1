@@ -14,8 +14,8 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-from providers import ProviderError
-from service import apply_manual_calibration, build_football_snapshot, build_mlb_snapshot, build_nba_snapshot, save_snapshot
+from providers import ProviderError, fetch_final_results
+from service import apply_manual_calibration, build_football_snapshot, build_mlb_snapshot, build_nba_snapshot, save_snapshot, settle_snapshot
 from storage import StorageError, create_store
 from ui import render_snapshot
 
@@ -229,6 +229,29 @@ def _admin_page(store, storage_label: str) -> None:
         render_snapshot(st, automatic, "自動快照（會員可查詢）")
         st.caption("不做人工校正時，自動快照已可直接提供會員查詢；之後建立新的自動快照也不會覆蓋已發布的人工校正版。")
         _manual_calibration_panel(st, store, automatic, sport, day, sport_label)
+        st.divider()
+        st.subheader("賽後回查與命中率")
+        st.caption("僅更新已保存快照的賽果與結算，不會重算或改寫原本的賽前預測。延期／未完成賽事不納入命中率。")
+        if st.button(f"回查 {sport_label} 最終賽果", key=f"settle_{sport}_{day}"):
+            try:
+                with st.spinner("正在核對最終賽果…"):
+                    results = fetch_final_results(sport, selected)
+                    settled_auto, auto_count = settle_snapshot(automatic, results=results)
+                    member_snapshot, member_label = store.get_member_snapshot(sport, day)
+                    published = None
+                    published_count = 0
+                    if member_snapshot and member_label == "人工校正正式推薦":
+                        published, published_count = settle_snapshot(member_snapshot, results=results)
+                    if not auto_count and not published_count:
+                        st.info("目前沒有已結束且可核對的賽事；快照沒有變更。")
+                    else:
+                        store.save_settled_snapshots(sport, day, settled_auto, published)
+                        st.success(f"已回查 {max(auto_count, published_count)} 場已結束賽事；會員端現在可查看綠／紅結算與命中率。")
+                        st.rerun()
+            except (ProviderError, StorageError) as exc:
+                st.error(str(exc))
+            except Exception:
+                st.error("本次回查未完成；既有快照沒有被覆蓋。請稍後再試。")
     with st.expander("資料來源與安全規則"):
         st.write("MLB：MLB Stats API（球隊打擊／投球、預定先發）＋ The Odds API（讓分／大小線）。")
         st.write("NBA：ESPN（賽程、球隊得失分與賽季勝率）＋ The Odds API（讓分／大小線）。")
