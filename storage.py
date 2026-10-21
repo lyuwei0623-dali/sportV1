@@ -27,6 +27,7 @@ class SnapshotStore(Protocol):
     def save_manual_published(self, sport: str, date_key: str, payload: dict[str, Any]) -> None: ...
     def get_member_snapshot(self, sport: str, date_key: str) -> tuple[dict[str, Any] | None, str]: ...
     def get_automatic_snapshot(self, sport: str, date_key: str) -> dict[str, Any] | None: ...
+    def save_settled_snapshots(self, sport: str, date_key: str, automatic: dict[str, Any], published: dict[str, Any] | None) -> None: ...
 
 
 def _now() -> str:
@@ -83,6 +84,15 @@ class LocalSnapshotStore:
                 raise StorageError("請先建立完整自動快照，才能發布人工校正版本")
             conn.execute("UPDATE snapshots SET published_payload=?, published_at=? WHERE sport=? AND date_key=?",
                          (json.dumps(payload, ensure_ascii=False), _now(), sport, date_key))
+
+    def save_settled_snapshots(self, sport: str, date_key: str, automatic: dict[str, Any], published: dict[str, Any] | None) -> None:
+        with self._connection() as conn:
+            conn.execute("""UPDATE snapshots SET automatic_payload=?, automatic_at=?,
+                published_payload=COALESCE(?, published_payload), published_at=CASE WHEN ? IS NULL THEN published_at ELSE ? END
+                WHERE sport=? AND date_key=?""",
+                (json.dumps(automatic, ensure_ascii=False), _now(),
+                 json.dumps(published, ensure_ascii=False) if published is not None else None,
+                 published, _now(), sport, date_key))
 
     def get_member_snapshot(self, sport: str, date_key: str) -> tuple[dict[str, Any] | None, str]:
         with self._connection() as conn:
@@ -156,6 +166,14 @@ class SupabaseSnapshotStore:
             raise StorageError("請先建立完整自動快照，才能發布人工校正版本")
         self._request("PATCH", f"/{self.TABLE}", params={"sport": f"eq.{sport}", "date_key": f"eq.{date_key}"},
                       body={"published_payload": payload, "published_at": _now()})
+
+    def save_settled_snapshots(self, sport: str, date_key: str, automatic: dict[str, Any], published: dict[str, Any] | None) -> None:
+        body: dict[str, Any] = {"automatic_payload": automatic, "automatic_at": _now()}
+        if published is not None:
+            body["published_payload"] = published
+            body["published_at"] = _now()
+        self._request("PATCH", f"/{self.TABLE}", params={"sport": f"eq.{sport}", "date_key": f"eq.{date_key}"},
+                      body=body)
 
     def get_member_snapshot(self, sport: str, date_key: str) -> tuple[dict[str, Any] | None, str]:
         row = self._row(sport, date_key)
