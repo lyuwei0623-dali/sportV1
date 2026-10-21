@@ -527,6 +527,56 @@ def fetch_football_injury_counts(events: Iterable[Event]) -> dict[str, dict[str,
     return counts
 
 
+
+def fetch_final_results(sport: str, day: date) -> dict[str, dict[str, Any]]:
+    """Return only completed official results for events in a saved snapshot."""
+
+    results: dict[str, dict[str, Any]] = {}
+    if sport == "mlb":
+        payload = _get(MLB_SCHEDULE_URL, params={"sportId": 1, "date": day.isoformat(), "hydrate": "linescore"})
+        for block in payload.get("dates", []):
+            for game in block.get("games", []):
+                if game.get("status", {}).get("abstractGameState") != "Final":
+                    continue
+                teams = game.get("teams", {})
+                home, away = teams.get("home", {}), teams.get("away", {})
+                if home.get("score") is None or away.get("score") is None:
+                    continue
+                results[f"mlb:{game.get('gamePk')}"] = {
+                    "status": "final", "home_score": int(home["score"]), "away_score": int(away["score"]),
+                }
+        return results
+    if sport == "nba":
+        payload = _get(NBA_SCOREBOARD_URL, params={"dates": day.strftime("%Y%m%d"), "limit": 100})
+        for item in payload.get("events", []):
+            status = ((item.get("status") or {}).get("type") or {}).get("name", "")
+            if status != "STATUS_FINAL":
+                continue
+            competitors = ((item.get("competitions") or [{}])[0].get("competitors") or [])
+            home = next((row for row in competitors if row.get("homeAway") == "home"), {})
+            away = next((row for row in competitors if row.get("homeAway") == "away"), {})
+            if home.get("score") is None or away.get("score") is None:
+                continue
+            results[f"nba:{item.get('id')}"] = {
+                "status": "final", "home_score": int(home["score"]), "away_score": int(away["score"]),
+            }
+        return results
+    if sport == "football":
+        # Fixture IDs were saved from API-Football, allowing an exact result match.
+        for utc_day in (day - timedelta(days=1), day):
+            for item in _api_football("fixtures", {"date": utc_day.isoformat()}):
+                fixture = item.get("fixture", {})
+                if fixture.get("status", {}).get("short") not in {"FT", "AET", "PEN"}:
+                    continue
+                goals = item.get("goals", {})
+                if goals.get("home") is None or goals.get("away") is None:
+                    continue
+                results[f"football:{fixture.get('id')}"] = {
+                    "status": "final", "home_score": int(goals["home"]), "away_score": int(goals["away"]),
+                }
+        return results
+    raise ProviderError("不支援的賽事種類")
+
 def fetch_odds(sport_key: str, *, regions: str | None = None) -> list[dict[str, Any]]:
     """Fetch lines only.
 
