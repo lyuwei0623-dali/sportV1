@@ -209,7 +209,7 @@ def fetch_nba_events(day: date) -> list[Event]:
 
 
 def _nba_standings(season: int) -> dict[int, dict[str, float]]:
-    payload = _get(NBA_STANDINGS_URL, params={"dates": season, "limit": 100})
+    payload = _get(NBA_STANDINGS_URL, params={"season": season, "seasontype": 2, "limit": 100})
     result: dict[int, dict[str, float]] = {}
     for group in payload.get("children", []):
         entries = ((group.get("standings") or {}).get("entries") or [])
