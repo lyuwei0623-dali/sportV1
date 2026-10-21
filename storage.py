@@ -92,7 +92,7 @@ class LocalSnapshotStore:
                 WHERE sport=? AND date_key=?""",
                 (json.dumps(automatic, ensure_ascii=False), _now(),
                  json.dumps(published, ensure_ascii=False) if published is not None else None,
-                 published, _now(), sport, date_key))
+                 published is not None, _now(), sport, date_key))
 
     def get_member_snapshot(self, sport: str, date_key: str) -> tuple[dict[str, Any] | None, str]:
         with self._connection() as conn:
