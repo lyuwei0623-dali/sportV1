@@ -26,6 +26,7 @@ from providers import (
     fetch_nba_events,
     fetch_nba_team_profiles,
     fetch_odds,
+    fetch_final_results,
     market_for_event,
 )
 from storage import SnapshotStore
@@ -273,6 +274,75 @@ def build_football_snapshot(day: date) -> DailySnapshot:
             warnings.append("缺少的讓分／大小線會顯示模型基準線，非實際可下注盤口")
         analyses.append(EventAnalysis(event, projection, market, recommendations, tuple(warnings)))
     return DailySnapshot("football", day.isoformat(), utc_now_iso(), tuple(analyses), tuple(dict.fromkeys(notes)))
+
+
+
+def _settlement_state(values: list[float]) -> str:
+    net = sum(values) / len(values)
+    if net > 0:
+        return "won"
+    if net < 0:
+        return "lost"
+    return "push"
+
+
+def _asian_settlement(value: float, line: float) -> str:
+    parts = (line,)
+    scaled = round(line * 4)
+    if abs(scaled) % 2:
+        parts = (int((line * 2) // 1) / 2, int(-(-line * 2 // 1)) / 2)
+    return _settlement_state([1 if value + part > 0 else -1 if value + part < 0 else 0 for part in parts])
+
+
+def settle_snapshot(snapshot: Mapping[str, Any], *, results: Mapping[str, Mapping[str, Any]]) -> tuple[dict[str, Any], int]:
+    """Attach final scores and transparent pick outcomes without changing predictions."""
+
+    updated = deepcopy(dict(snapshot))
+    settled_events = 0
+    summary: dict[str, dict[str, int]] = {
+        kind: {"won": 0, "lost": 0, "push": 0} for kind in ("moneyline", "spread", "total")
+    }
+    for item in updated.get("events", []):
+        event = item.get("event", {})
+        result = results.get(str(event.get("event_id", "")))
+        if not result or result.get("status") != "final":
+            continue
+        try:
+            home, away = int(result["home_score"]), int(result["away_score"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        picks: dict[str, dict[str, Any]] = {}
+        for rec in item.get("recommendations", []):
+            kind, state, selection = rec.get("market_type"), rec.get("state"), str(rec.get("selection", ""))
+            if kind not in summary or state == "unavailable":
+                continue
+            if kind == "moneyline":
+                if home == away:
+                    outcome = "push"
+                else:
+                    pick_home = selection.startswith("主隊")
+                    outcome = "won" if (home > away) == pick_home else "lost"
+            elif kind == "spread":
+                line = rec.get("market_line")
+                if line is None:
+                    continue
+                pick_home = selection.startswith("主隊")
+                outcome = _asian_settlement(home - away, float(line) if pick_home else -float(line))
+            else:
+                line = rec.get("market_line")
+                if line is None:
+                    continue
+                value = home + away - float(line)
+                outcome = _asian_settlement(value if selection.startswith("大分") else -value, 0.0)
+            picks[kind] = {"outcome": outcome, "source": state}
+            summary[kind][outcome] += 1
+        item["settlement"] = {
+            "status": "final", "home_score": home, "away_score": away, "picks": picks,
+        }
+        settled_events += 1
+    updated["settlement_summary"] = summary
+    updated["settled_at"] = utc_now_iso()
+    return updated, settled_events
 
 
 def save_snapshot(store: SnapshotStore, snapshot: DailySnapshot) -> None:
