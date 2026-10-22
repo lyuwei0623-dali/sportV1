@@ -255,7 +255,7 @@ def _admin_page(store, storage_label: str) -> None:
     with st.expander("資料來源與安全規則"):
         st.write("MLB：MLB Stats API（球隊打擊／投球、預定先發）＋ The Odds API（讓分／大小線）。")
         st.write("NBA：ESPN（賽程、球隊得失分與賽季勝率）＋ The Odds API（讓分／大小線）。")
-        st.write("足球：API-Football（賽程、主客場攻守、近期狀態、傷停）＋ The Odds API（讓分／大小線）。")
+        st.write("足球：API-Football（主客場攻守、近期狀態、傷停）＋ ESPN 公開資料備援（賽程、賽果、積分／進失球）＋ The Odds API（讓分／大小線）。")
         st.write("機率由球隊／球員資料計算；市場只提供實際讓分與大小線。缺線時會標記模型基準線，絕不偽裝成實際可下注盤。")
 
 
