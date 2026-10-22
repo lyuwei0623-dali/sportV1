@@ -284,12 +284,7 @@ def _espn_football_payload(url: str, *, league: str, params: dict[str, Any]) -> 
 
 
 def fetch_espn_football_events(day: date) -> list[Event]:
-    """Keyless fallback for the supported European competitions.
-
-    ESPN returns the same public schedule and final-score feed used by its
-    website.  It is deliberately kept separate from API-Football so an account
-    suspension cannot stop the whole football product.
-    """
+    """Keyless fallback for the supported European competitions."""
 
     from zoneinfo import ZoneInfo
 
@@ -303,33 +298,33 @@ def fetch_espn_football_events(day: date) -> list[Event]:
                 params={"dates": source_day.strftime("%Y%m%d"), "limit": 100},
             )
             for item in payload.get("events", []):
-                if str(item.get("id")) in seen:
+                event_id = str(item.get("id") or "")
+                if not event_id or event_id in seen:
                     continue
-                seen.add(str(item.get("id")))
-            competition = (item.get("competitions") or [{}])[0]
-            competitors = competition.get("competitors") or []
-            home = next((row for row in competitors if row.get("homeAway") == "home"), {})
-            away = next((row for row in competitors if row.get("homeAway") == "away"), {})
-            home_team, away_team = home.get("team") or {}, away.get("team") or {}
-            kickoff = str(item.get("date") or "")
-            try:
-                local_day = datetime.fromisoformat(kickoff.replace("Z", "+00:00")).astimezone(taipei).date()
-            except ValueError:
-                continue
-            status = ((item.get("status") or {}).get("type") or {}).get("name", "")
-            if local_day != day or status in {"STATUS_FINAL", "STATUS_POSTPONED", "STATUS_CANCELED"}:
-                continue
-            if not home_team.get("displayName") or not away_team.get("displayName"):
-                continue
-            events.append(Event(
-                event_id=f"football:espn:{espn_league}:{item.get('id')}", sport="football", kickoff=kickoff,
-                home=str(home_team["displayName"]), away=str(away_team["displayName"]), league=league_name,
-                metadata={"source": "espn", "league_id": FOOTBALL_LEAGUES[league_name][1],
-                          "espn_league": espn_league, "home_team_id": home_team.get("id"),
-                          "away_team_id": away_team.get("id"), "fixture_id": item.get("id")},
-            ))
+                seen.add(event_id)
+                competition = (item.get("competitions") or [{}])[0]
+                competitors = competition.get("competitors") or []
+                home = next((row for row in competitors if row.get("homeAway") == "home"), {})
+                away = next((row for row in competitors if row.get("homeAway") == "away"), {})
+                home_team, away_team = home.get("team") or {}, away.get("team") or {}
+                kickoff = str(item.get("date") or "")
+                try:
+                    local_day = datetime.fromisoformat(kickoff.replace("Z", "+00:00")).astimezone(taipei).date()
+                except ValueError:
+                    continue
+                status = ((item.get("status") or {}).get("type") or {}).get("name", "")
+                if local_day != day or status in {"STATUS_FINAL", "STATUS_POSTPONED", "STATUS_CANCELED"}:
+                    continue
+                if not home_team.get("displayName") or not away_team.get("displayName"):
+                    continue
+                events.append(Event(
+                    event_id=f"football:espn:{espn_league}:{event_id}", sport="football", kickoff=kickoff,
+                    home=str(home_team["displayName"]), away=str(away_team["displayName"]), league=league_name,
+                    metadata={"source": "espn", "league_id": FOOTBALL_LEAGUES[league_name][1],
+                              "espn_league": espn_league, "home_team_id": home_team.get("id"),
+                              "away_team_id": away_team.get("id"), "fixture_id": event_id},
+                ))
     return events
-
 
 def fetch_espn_football_standings(day: date) -> dict[int, dict[int, dict[str, float]]]:
     """Return current-season team scoring rows from ESPN, keyed like API-Football."""
