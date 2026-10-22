@@ -296,11 +296,16 @@ def fetch_espn_football_events(day: date) -> list[Event]:
     taipei = ZoneInfo("Asia/Taipei")
     events: list[Event] = []
     for league_name, espn_league in ESPN_SOCCER_LEAGUES.items():
-        payload = _espn_football_payload(
-            ESPN_SOCCER_SCOREBOARD_URL, league=espn_league,
-            params={"dates": day.strftime("%Y%m%d"), "limit": 100},
-        )
-        for item in payload.get("events", []):
+        seen: set[str] = set()
+        for source_day in (day - timedelta(days=1), day):
+            payload = _espn_football_payload(
+                ESPN_SOCCER_SCOREBOARD_URL, league=espn_league,
+                params={"dates": source_day.strftime("%Y%m%d"), "limit": 100},
+            )
+            for item in payload.get("events", []):
+                if str(item.get("id")) in seen:
+                    continue
+                seen.add(str(item.get("id")))
             competition = (item.get("competitions") or [{}])[0]
             competitors = competition.get("competitors") or []
             home = next((row for row in competitors if row.get("homeAway") == "home"), {})
