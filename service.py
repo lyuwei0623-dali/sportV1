@@ -20,6 +20,8 @@ from providers import (
     fetch_football_injury_counts,
     fetch_football_standings,
     fetch_football_team_profiles,
+    fetch_espn_football_events,
+    fetch_espn_football_standings,
     fetch_mlb_events,
     fetch_mlb_pitcher_profiles,
     fetch_mlb_team_profiles,
@@ -234,20 +236,34 @@ def build_nba_snapshot(day: date) -> DailySnapshot:
 
 
 def build_football_snapshot(day: date) -> DailySnapshot:
-    events = fetch_football_events(day)
+    try:
+        events = fetch_football_events(day)
+        fallback = False
+    except ProviderError:
+        events = fetch_espn_football_events(day)
+        fallback = True
     if not events:
         raise ProviderError("當日沒有可建立的歐洲足球賽事；未覆蓋既有快照")
-    notes = ["API-Football 賽程"]
-    try:
-        standings = fetch_football_standings(day)
-        team_profiles = fetch_football_team_profiles(events)
-        notes.append("API-Football 團隊主客場攻守資料")
-    except ProviderError:
-        standings, team_profiles = {}, {}
-        notes.append("團隊統計暫不可用")
-    injuries = fetch_football_injury_counts(events)
-    if injuries:
-        notes.append("API-Football 傷停名單")
+    if fallback:
+        notes = ["ESPN 公開賽程與聯賽積分（API-Football 暫不可用）"]
+        try:
+            standings = fetch_espn_football_standings(day)
+        except ProviderError:
+            standings = {}
+        team_profiles, injuries = {}, {}
+        notes.append("ESPN 聯賽進失球資料（傷停／主客細項暫不可用）")
+    else:
+        notes = ["API-Football 賽程"]
+        try:
+            standings = fetch_football_standings(day)
+            team_profiles = fetch_football_team_profiles(events)
+            notes.append("API-Football 團隊主客場攻守資料")
+        except ProviderError:
+            standings, team_profiles = {}, {}
+            notes.append("團隊統計暫不可用")
+        injuries = fetch_football_injury_counts(events)
+        if injuries:
+            notes.append("API-Football 傷停名單")
     odds_by_league: dict[str, list[dict[str, Any]]] = {}
     for league in {event.league for event in events}:
         sport_key = FOOTBALL_LEAGUES[league][0]
