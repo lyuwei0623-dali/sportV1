@@ -660,20 +660,21 @@ def fetch_final_results(sport: str, day: date) -> dict[str, dict[str, Any]]:
             pass
         # ESPN IDs settle snapshots created through the keyless fallback.
         for league_name, espn_league in ESPN_SOCCER_LEAGUES.items():
-            payload = _espn_football_payload(
-                ESPN_SOCCER_SCOREBOARD_URL, league=espn_league,
-                params={"dates": day.strftime("%Y%m%d"), "limit": 100},
-            )
-            for item in payload.get("events", []):
-                status = ((item.get("status") or {}).get("type") or {}).get("name", "")
-                competitors = ((item.get("competitions") or [{}])[0].get("competitors") or [])
-                home = next((row for row in competitors if row.get("homeAway") == "home"), {})
-                away = next((row for row in competitors if row.get("homeAway") == "away"), {})
-                if status != "STATUS_FINAL" or home.get("score") is None or away.get("score") is None:
-                    continue
-                results[f"football:espn:{espn_league}:{item.get('id')}"] = {
-                    "status": "final", "home_score": int(home["score"]), "away_score": int(away["score"]),
-                }
+            for source_day in (day - timedelta(days=1), day):
+                payload = _espn_football_payload(
+                    ESPN_SOCCER_SCOREBOARD_URL, league=espn_league,
+                    params={"dates": source_day.strftime("%Y%m%d"), "limit": 100},
+                )
+                for item in payload.get("events", []):
+                    status = ((item.get("status") or {}).get("type") or {}).get("name", "")
+                    competitors = ((item.get("competitions") or [{}])[0].get("competitors") or [])
+                    home = next((row for row in competitors if row.get("homeAway") == "home"), {})
+                    away = next((row for row in competitors if row.get("homeAway") == "away"), {})
+                    if status != "STATUS_FINAL" or home.get("score") is None or away.get("score") is None:
+                        continue
+                    results[f"football:espn:{espn_league}:{item.get('id')}"] = {
+                        "status": "final", "home_score": int(home["score"]), "away_score": int(away["score"]),
+                    }
         return results
     raise ProviderError("不支援的賽事種類")
 
