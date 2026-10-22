@@ -643,17 +643,36 @@ def fetch_final_results(sport: str, day: date) -> dict[str, dict[str, Any]]:
             }
         return results
     if sport == "football":
-        # Fixture IDs were saved from API-Football, allowing an exact result match.
-        for utc_day in (day - timedelta(days=1), day):
-            for item in _api_football("fixtures", {"date": utc_day.isoformat()}):
-                fixture = item.get("fixture", {})
-                if fixture.get("status", {}).get("short") not in {"FT", "AET", "PEN"}:
+        # Exact API-Football IDs remain preferred when that service is available.
+        try:
+            for utc_day in (day - timedelta(days=1), day):
+                for item in _api_football("fixtures", {"date": utc_day.isoformat()}):
+                    fixture = item.get("fixture", {})
+                    if fixture.get("status", {}).get("short") not in {"FT", "AET", "PEN"}:
+                        continue
+                    goals = item.get("goals", {})
+                    if goals.get("home") is None or goals.get("away") is None:
+                        continue
+                    results[f"football:{fixture.get('id')}"] = {
+                        "status": "final", "home_score": int(goals["home"]), "away_score": int(goals["away"]),
+                    }
+        except ProviderError:
+            pass
+        # ESPN IDs settle snapshots created through the keyless fallback.
+        for league_name, espn_league in ESPN_SOCCER_LEAGUES.items():
+            payload = _espn_football_payload(
+                ESPN_SOCCER_SCOREBOARD_URL, league=espn_league,
+                params={"dates": day.strftime("%Y%m%d"), "limit": 100},
+            )
+            for item in payload.get("events", []):
+                status = ((item.get("status") or {}).get("type") or {}).get("name", "")
+                competitors = ((item.get("competitions") or [{}])[0].get("competitors") or [])
+                home = next((row for row in competitors if row.get("homeAway") == "home"), {})
+                away = next((row for row in competitors if row.get("homeAway") == "away"), {})
+                if status != "STATUS_FINAL" or home.get("score") is None or away.get("score") is None:
                     continue
-                goals = item.get("goals", {})
-                if goals.get("home") is None or goals.get("away") is None:
-                    continue
-                results[f"football:{fixture.get('id')}"] = {
-                    "status": "final", "home_score": int(goals["home"]), "away_score": int(goals["away"]),
+                results[f"football:espn:{espn_league}:{item.get('id')}"] = {
+                    "status": "final", "home_score": int(home["score"]), "away_score": int(away["score"]),
                 }
         return results
     raise ProviderError("不支援的賽事種類")
