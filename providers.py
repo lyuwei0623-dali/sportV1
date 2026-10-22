@@ -30,6 +30,13 @@ MLB_PERSON_STATS_URL = "https://statsapi.mlb.com/api/v1/people/{person_id}/stats
 NBA_SCOREBOARD_URL = "https://site.web.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 NBA_STANDINGS_URL = "https://site.web.api.espn.com/apis/v2/sports/basketball/nba/standings"
 
+ESPN_SOCCER_SCOREBOARD_URL = "https://site.web.api.espn.com/apis/site/v2/sports/soccer/{league}/scoreboard"
+ESPN_SOCCER_STANDINGS_URL = "https://site.web.api.espn.com/apis/v2/sports/soccer/{league}/standings"
+ESPN_SOCCER_LEAGUES: dict[str, str] = {
+    "英超": "eng.1", "西甲": "esp.1", "義甲": "ita.1",
+    "德甲": "ger.1", "法甲": "fra.1", "歐冠": "uefa.champions",
+}
+
 FOOTBALL_LEAGUES: dict[str, tuple[str, int]] = {
     "英超": ("soccer_epl", 39),
     "西甲": ("soccer_spain_la_liga", 140),
@@ -270,6 +277,80 @@ def _api_football(path: str, params: dict[str, Any]) -> Any:
         suffix = f"（{detail}）" if detail else ""
         raise ProviderError(f"API-Football 無法提供資料{suffix}")
     return payload.get("response", [])
+
+
+def _espn_football_payload(url: str, *, league: str, params: dict[str, Any]) -> Any:
+    return _get(url.format(league=league), params=params)
+
+
+def fetch_espn_football_events(day: date) -> list[Event]:
+    """Keyless fallback for the supported European competitions.
+
+    ESPN returns the same public schedule and final-score feed used by its
+    website.  It is deliberately kept separate from API-Football so an account
+    suspension cannot stop the whole football product.
+    """
+
+    from zoneinfo import ZoneInfo
+
+    taipei = ZoneInfo("Asia/Taipei")
+    events: list[Event] = []
+    for league_name, espn_league in ESPN_SOCCER_LEAGUES.items():
+        payload = _espn_football_payload(
+            ESPN_SOCCER_SCOREBOARD_URL, league=espn_league,
+            params={"dates": day.strftime("%Y%m%d"), "limit": 100},
+        )
+        for item in payload.get("events", []):
+            competition = (item.get("competitions") or [{}])[0]
+            competitors = competition.get("competitors") or []
+            home = next((row for row in competitors if row.get("homeAway") == "home"), {})
+            away = next((row for row in competitors if row.get("homeAway") == "away"), {})
+            home_team, away_team = home.get("team") or {}, away.get("team") or {}
+            kickoff = str(item.get("date") or "")
+            try:
+                local_day = datetime.fromisoformat(kickoff.replace("Z", "+00:00")).astimezone(taipei).date()
+            except ValueError:
+                continue
+            status = ((item.get("status") or {}).get("type") or {}).get("name", "")
+            if local_day != day or status in {"STATUS_FINAL", "STATUS_POSTPONED", "STATUS_CANCELED"}:
+                continue
+            if not home_team.get("displayName") or not away_team.get("displayName"):
+                continue
+            events.append(Event(
+                event_id=f"football:espn:{espn_league}:{item.get('id')}", sport="football", kickoff=kickoff,
+                home=str(home_team["displayName"]), away=str(away_team["displayName"]), league=league_name,
+                metadata={"source": "espn", "league_id": FOOTBALL_LEAGUES[league_name][1],
+                          "espn_league": espn_league, "home_team_id": home_team.get("id"),
+                          "away_team_id": away_team.get("id"), "fixture_id": item.get("id")},
+            ))
+    return events
+
+
+def fetch_espn_football_standings(day: date) -> dict[int, dict[int, dict[str, float]]]:
+    """Return current-season team scoring rows from ESPN, keyed like API-Football."""
+
+    season = football_season(day)
+    result: dict[int, dict[int, dict[str, float]]] = {}
+    for league_name, espn_league in ESPN_SOCCER_LEAGUES.items():
+        payload = _espn_football_payload(
+            ESPN_SOCCER_STANDINGS_URL, league=espn_league,
+            params={"season": season, "seasontype": 1, "limit": 100},
+        )
+        table: dict[int, dict[str, float]] = {}
+        for group in payload.get("children", []):
+            for entry in ((group.get("standings") or {}).get("entries") or []):
+                team_id = _number((entry.get("team") or {}).get("id"))
+                values = {str(stat.get("name")): _number(stat.get("value")) for stat in entry.get("stats", [])}
+                played = values.get("gamesPlayed") or 0.0
+                if team_id is None or not played:
+                    continue
+                table[int(team_id)] = {
+                    "played": played, "for": values.get("pointsFor") or 0.0,
+                    "against": values.get("pointsAgainst") or 0.0,
+                }
+        if table:
+            result[FOOTBALL_LEAGUES[league_name][1]] = table
+    return result
 
 
 def fetch_football_events(day: date) -> list[Event]:
