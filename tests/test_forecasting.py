@@ -20,7 +20,8 @@ class ForecastingTest(unittest.TestCase):
         self.assertEqual([pick.state for pick in picks], ["model", "model_reference", "model_reference"])
         self.assertTrue(all(pick.model_probability is not None for pick in picks))
         expected_fields = {"market_type", "state", "selection", "model_probability", "market_line", "reason"}
-        self.assertTrue(all(set(pick.__dict__) == expected_fields for pick in picks))
+        self.assertTrue(all(expected_fields <= set(pick.__dict__) for pick in picks))
+        self.assertTrue(all(not pick.actionable and pick.expected_return is None for pick in picks))
 
     def test_actual_lines_replace_reference_lines_without_using_prices(self):
         projection = score_projection(2.0, .7, "test")

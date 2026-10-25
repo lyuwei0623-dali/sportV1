@@ -26,7 +26,7 @@ class TeamAndPlayerInputTest(unittest.TestCase):
         self.assertIsNotNone(strong_projection)
         self.assertGreater(weak_projection.home_expected, strong_projection.home_expected)
 
-    def test_football_injury_data_changes_projection_without_fixed_baseline(self):
+    def test_unweighted_injury_counts_do_not_invent_player_impact(self):
         event = Event("football:1", "football", "", "Home", "Away", "英超", {
             "league_id": 39, "season": 2026, "home_team_id": 1, "away_team_id": 2,
         })
@@ -42,7 +42,8 @@ class TeamAndPlayerInputTest(unittest.TestCase):
         injured = _football_projection(event, standings, profiles, {"football:1": {"home": 4, "away": 0}})
         self.assertIsNotNone(healthy)
         self.assertIsNotNone(injured)
-        self.assertGreater(healthy.home_expected, injured.home_expected)
+        self.assertEqual(healthy.home_expected, injured.home_expected)
+        self.assertIn("不以人數直接扣分",injured.source_quality)
         self.assertNotEqual((healthy.home_expected, healthy.away_expected), (1.4, 1.1))
 
 

@@ -1,98 +1,54 @@
-# 維大力體育APP Restart V2｜純機率版
+# 維大力體育｜Audit V3
 
-這是全新、獨立的程式碼，**不能與舊 V12～V23 混用**。它只做會員真正需要看的三件事：
+繁體中文 Streamlit 賽事與模型觀察 APP，涵蓋 MLB、NBA、英超、西甲、德甲、法甲、義甲、歐冠。
 
-- 哪一支球隊的**勝率較高**，以及百分比。
-- 在保存當時的讓分線，哪一邊的**過盤機率較高**，以及百分比。
-- 在保存當時的大小線，大分或小分的**過盤機率較高**，以及百分比。
+**現階段不是已驗證的下注推薦引擎。** 模型均顯示 PASS，提供估計勝率、實際線的過盤分布與估計EV。尚未完成樣本外校準，不宣稱與任何權威機構使用同一套算法，更不保證獲利。
 
-本版只呈現資料模型計算出的機率。The Odds API 只提供讓分／大小的**線**；所有百分比由球隊、先發／球員與傷停資料的模型產生。
+## 這次修正
 
-## 會員端會看到什麼
+- 賽程與結算統一台灣日期；已結束的賽事仍可查詢，但不能建立假的歷史預測。
+- NBA ESPN 賽季使用結束年份；樣本不足使用上一季會清楚揭露。
+- 盤口以主客隊與開賽時間嚴格配對，同莊家不混線，拒絕過期／非有限值／不完整雙邊盤。
+- 保存 `h2h,spreads,totals` 的十進位賠率，按全贏／半贏／走盤／半輸／全輸計算估計EV。增加h2h會多耗一項市場的API額度，60秒記憶體快取降低重複請求。
+- 修正客隊讓分方向、足球獨贏和局輸盤、90分鐘結算與NBA整數線走盤機率。
+- 開賽後鎖定舊預測，首筆＋最近29次修訂留存；空賽程／失敗不刪舊資料。
+- 模型參考線、舊版與缺乏賽前時間證據的紀錄不列入新版績效。
+- 健康摘要、匿名追蹤碼、GitHub錯誤回報、離線測試、公開來源排程檢查。
 
-每場固定有三格：
+## 資料來源與模型限制
 
-| 格子 | 會員看到的內容 |
-|---|---|
-| 勝率最高 | 主隊或客隊勝，以及勝率。例如：`主隊勝｜58.4%`。足球的和局機率仍另列，不能被隱藏。 |
-| 讓分過盤率 | 實際保存的讓分線下，較可能過盤的一方與機率。例如：`客隊 +1.5｜61.2%`。 |
-| 大小過盤率 | 實際保存的大小線下，大／小分較可能過盤的一方與機率。例如：`大分 8.5｜56.8%`。 |
+MLB使用 MLB Stats API 的團隊攻守與預定先發；NBA使用 ESPN 團隊得失分；足球以API-Football為主，失敗或空資料改用ESPN。The Odds API提供盤口與賠率，**賠率不會用來偷偷改高模型勝率**。
 
-若資料來源暫時沒有實際讓分或大小線，APP **仍會給完整三格結果**，但會以紫色的「模型基準線」清楚標示為**非實際可下注盤**。這避免會員看到空白或「無法評估」，也不會把模型基準線偽裝成市場盤口。
+缺資料即標示不足，不用固定均分底板補成可信機率。足球未評估球員影響權重，不以傷停人數固定扣分。NBA轉隊／傷停／輪換、MLB打線／牛棚負荷／天氣未完整建模。足球獨立卜瓦松、NBA常態變異與MLB延長賽近似均未校準。
 
-## 真正使用的資料
+會員唯讀已保存快照，**不是背景即時盤口**。只有管理員按下按鈕才會建立推薦快照；健康檢查不會代替管理員發布。
 
-### MLB
+## 現有部署更新
 
-- MLB Stats API：賽程、主客隊、賽季戰績、球隊每場得分、OPS、團隊 ERA／WHIP、已公布的預定先發、先發 ERA／WHIP／局數。
-- 模型：對手打擊與投球能力交叉計算，再以已公布先發做保守調整；打線、牛棚使用與天氣尚未確認時會顯示風險，不會假裝已納入。
-- The Odds API：只讀取讓分與大小線，不讀取、不儲存、不顯示價格。
+此repository的 `main` 為部署來源，入口 `app.py`；沿用現有Supabase表，不需要重建或刪除資料。舊快照保留但明示舊版。重新回查可修正舊版結算，不能把舊結果冒充新版績效。
 
-### 歐洲足球（英超、西甲、義甲、德甲、法甲、歐冠）
-
-- API-Football：賽程、聯賽攻守、主客場進失球、近期狀態、零封／未進球率、可取得的傷停／停賽名單。
-- 模型：先由主客場攻守建立預估進球，再以近期狀態、零封／未進球率與傷停人數做小幅、可說明的調整；絕不套用所有隊伍相同的 `1.40 / 1.10` 底板。
-- The Odds API：只讀取讓分與大小線。
-
-足球的「主預測比分」是**勝率較高一隊的比分情境中最可能的單一比分**，並同步顯示它在全比分分布中的命中機率。它不是保證，也不會因為 1:1 是常見比分就固定顯示 1:1。
-
-## 部署方式
-
-### 1. 建立全新的 GitHub repository
-
-建立空白 repository，例如 `dali-sports-restart`。把這個資料夾**內的所有檔案**放到 repository 根目錄後 Commit。
-
-不要將任何舊 APP、舊 SQLite、舊 `app.py`、舊 `requirements.txt` 或舊更新檔搬進來。
-
-### 2. 建立 Supabase 永久資料庫
-
-在 Supabase 建立新的 project，進入 **SQL Editor**，完整貼上並執行 `database_setup.sql` 一次。
-
-這個架構只使用一張正常的快照表：自動建立的快照會保存，會員只讀取保存版本；重新部署也不會遺失。
-
-### 3. 建立 Streamlit Cloud App
-
-1. 建立新的 Streamlit App，選剛建立的 GitHub repository。
-2. **Main file path** 設為 `app.py`。
-3. 到 **Settings → Secrets**，貼上以下內容並填入自己的值。
-4. 儲存後等待重新部署。
+密碼與金鑰只能放在Streamlit **Settings → Secrets**。管理員密碼與會員密碼由使用者自行儲存，不在程式碼提供預設：
 
 ```toml
-APP_ADMIN_PASSWORD = "一組只有你知道的長密碼"
-APP_MEMBER_PASSWORD = "會員登入密碼"
+APP_ADMIN_PASSWORD = "由管理員設定的密碼"
+APP_MEMBER_PASSWORD = "由管理員設定的會員密碼"
 SUPABASE_URL = "https://你的專案.supabase.co"
-SUPABASE_SERVICE_ROLE_KEY = "Supabase 的 service_role key"
-API_FOOTBALL_KEY = "你的 API-Football 金鑰"
-API_FOOTBALL_INCLUDE_INJURIES = "1"
-THE_ODDS_API_KEY = "你的 The Odds API 金鑰"
-ODDS_REGIONS = "eu"
+SUPABASE_SECRET_KEY = "從平台取得的伺服器端金鑰"
+THE_ODDS_API_KEY = "從來源取得的金鑰"
+API_FOOTBALL_KEY = "從來源取得的金鑰"
 REQUIRE_SUPABASE = "1"
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY`、各 API Key、管理員密碼與會員密碼都只能放在 Streamlit Secrets；不得放進 GitHub。
+兼容舊的 `ODDS_API_KEY` 與 `SUPABASE_SERVICE_ROLE_KEY` 名稱。不把金鑰貼進GitHub、Issue或日誌。若API-Football未恢復，可繼續使用ESPN備援，缺的進階統計不假裝已取得。
 
-## 每日操作
+## 驗證與追蹤
 
-1. 用管理員密碼登入。
-2. 選擇 MLB 或歐洲足球與比賽日期。
-3. 按「建立並保存自動快照」。
-4. 建立成功後，會員立即可以查看這份自動快照；管理員想確認時再按「標記為管理員確認版」。
-
-手動確認是發布權限，不是模型能否產生結果的前提。只要球隊資料成功抓到，會員就會有勝率、讓分過盤率與大小過盤率；沒有實際線時會明確標記模型基準線。
-
-## 真實限制
-
-- 機率不是保證結果，正確比分尤其通常只會有較低的單一命中機率。
-- API 尚未提供或尚未公布的先發／傷停，不能被假裝已知。
-- 若球隊資料本身不足，APP 會拒絕產生虛構百分比並保留舊快照；這與缺少盤口線不同。
-- 新抓取失敗不會用空資料覆蓋舊快照。
-
-## 本機測試
-
-```bash
+```sh
 python -m pip install -r requirements.txt
-python -m unittest discover -s tests -q
-streamlit run app.py
+python -m unittest discover -s tests -v
+python health_check.py
 ```
 
-本機若未設定 Supabase，可暫時設 `REQUIRE_SUPABASE = "0"` 使用本機 SQLite 測畫面；這個模式不能用於正式會員部署。
+具體維護、校準驗收與回復程序見 [MAINTENANCE.md](MAINTENANCE.md)。
+
+來源契約參考：[The Odds API V4](https://the-odds-api.com/liveapi/guides/v4/)、[Streamlit Secrets](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management)。ESPN公開端點非穩定SLA；日常健康檢查不能代替完整雙來源賽程驗證。

@@ -1,0 +1,63 @@
+name: Quality and public provider health
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 23 * * *'
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - run: python -m compileall -q app.py models.py providers.py service.py storage.py forecasting.py ui.py auth.py diagnostics.py health_check.py time_utils.py settlement_math.py
+  public-health:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python health_check.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-health
+          path: health-report.json
+          retention-days: 30
+  report-failure:
+    needs: [regression, public-health]
+    if: always() && github.event_name != 'pull_request' && (needs.regression.result == 'failure' || needs.public-health.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '[自動健康檢查] 測試或公開來源異常';
+            const found = await github.paginate(github.rest.issues.listForRepo, {...context.repo, state:'open', per_page:100});
+            if (!found.some(i => !i.pull_request && i.title === title)) {
+              await github.rest.issues.create({...context.repo, title,
+                body:`檢查未通過，請查看 Actions 執行紀錄：${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\n此通知不包含密碼、金鑰、會員資料或原始API回應。外部來源逾時不代表模型錯誤；先分類再修正。尚未自動部署任何修補。`});
+            }

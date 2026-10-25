@@ -8,6 +8,7 @@ from __future__ import annotations
 import hmac
 import math
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -18,13 +19,15 @@ from providers import ProviderError, fetch_final_results
 from service import apply_manual_calibration, build_football_snapshot, build_mlb_snapshot, build_nba_snapshot, save_snapshot, settle_snapshot
 from storage import StorageError, create_store
 from ui import render_snapshot
+from auth import verify_password, credential_version
+from diagnostics import record, snapshot_health, VERSION
 
 
 APP_NAME = "維大力體育"
 TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 SECRET_NAMES = (
     "APP_ADMIN_PASSWORD", "APP_MEMBER_PASSWORD", "SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY",
-    "API_FOOTBALL_KEY", "API_FOOTBALL_INCLUDE_INJURIES", "THE_ODDS_API_KEY", "ODDS_REGIONS", "REQUIRE_SUPABASE",
+    "API_FOOTBALL_KEY", "API_FOOTBALL_INCLUDE_INJURIES", "THE_ODDS_API_KEY", "ODDS_API_KEY", "ODDS_REGIONS", "REQUIRE_SUPABASE",
 )
 
 
@@ -56,21 +59,34 @@ def _brand() -> None:
 
 
 def _login() -> str:
-    _brand()
     admin_password = os.environ.get("APP_ADMIN_PASSWORD", "")
     member_password = os.environ.get("APP_MEMBER_PASSWORD", "")
     if not admin_password or not member_password:
+        _brand()
         st.error("APP 尚未完成登入設定；請管理員在 Streamlit Secrets 設定 APP_ADMIN_PASSWORD 與 APP_MEMBER_PASSWORD。")
         st.stop()
+    version = credential_version(admin_password,member_password)
+    if st.session_state.get("credential_version") != version:
+        st.session_state.pop("role",None)
     if "role" in st.session_state:
         return st.session_state["role"]
+    _brand()
     login_type = st.radio("登入身分", ["會員", "管理員"], horizontal=True)
     password = st.text_input("登入密碼", type="password")
     if st.button("登入", type="primary"):
+        if time.time() < st.session_state.get("login_retry_after",0):
+            st.error("嘗試次數過多，請稍候一分鐘再試。")
+            st.stop()
         expected = admin_password if login_type == "管理員" else member_password
-        if hmac.compare_digest(password, expected):
+        if verify_password(password, expected):
             st.session_state["role"] = "admin" if login_type == "管理員" else "member"
+            st.session_state["credential_version"] = version
+            st.session_state["login_failures"] = 0
             st.rerun()
+        failures = st.session_state.get("login_failures",0)+1
+        st.session_state["login_failures"] = failures
+        if failures>=5:
+            st.session_state["login_retry_after"] = time.time()+60
         st.error("密碼不正確")
     st.stop()
 
@@ -208,22 +224,30 @@ def _admin_page(store, storage_label: str) -> None:
     sport = {"MLB": "mlb", "NBA": "nba", "歐洲足球": "football"}[sport_label]
     selected = st.date_input("建立哪一天的賽前快照", _taiwan_day(), key="admin_day")
     day = selected.isoformat()
-    st.info("按下後由後台自動抓取賽程、球隊／球員資料與讓分／大小線；不需要手動輸入盤口。勝率永遠由模型資料產生；缺少實際讓分或大小線時，會明確顯示模型基準線，不會留白。")
+    st.info("後台抓取賽程、球隊資料與盤口／賠率。已開賽的預測鎖定；缺線不當實盤。模型目前未完成樣本外校準，顯示估計機率與 PASS，不宣稱已驗證優勢。")
     if st.button(f"建立並保存 {sport_label} 自動快照", type="primary"):
         try:
             with st.spinner("正在建立快照…"):
                 builders = {"mlb": build_mlb_snapshot, "nba": build_nba_snapshot, "football": build_football_snapshot}
                 snapshot = builders[sport](selected)
                 save_snapshot(store, snapshot)
+                st.session_state["last_diagnostic"] = record("snapshot",sport=sport,event_count=len(snapshot.events))
             st.success(f"已保存 {len(snapshot.events)} 場 {sport_label} 賽事。自動快照現在已可供會員查詢。")
         except ProviderError as exc:
+            st.session_state["last_diagnostic"] = record("snapshot",sport=sport,error=exc)
             st.error(str(exc))
         except StorageError as exc:
+            st.session_state["last_diagnostic"] = record("storage",sport=sport,error=exc)
             st.error(str(exc))
-        except Exception:
+        except Exception as exc:
+            st.session_state["last_diagnostic"] = record("snapshot",sport=sport,error=exc)
             st.error("本次建立未完成；既有快照沒有被覆蓋。請稍後再試或檢查資料來源設定。")
     automatic = store.get_automatic_snapshot(sport, day)
     if automatic:
+        with st.expander("資料健康檢查與追蹤"):
+            for label,value in snapshot_health(automatic).items():
+                st.write(f"{label}：{value}")
+            st.caption("會員仍讀保存的快照；不是背景即時更新。新增版本保留首筆及最近29次紀錄，已開賽預測不覆蓋。")
         st.divider()
         st.subheader("已保存快照預覽")
         render_snapshot(st, automatic, "自動快照（會員可查詢）")
@@ -240,23 +264,32 @@ def _admin_page(store, storage_label: str) -> None:
                     member_snapshot, member_label = store.get_member_snapshot(sport, day)
                     published = None
                     published_count = 0
-                    if member_snapshot and member_label == "人工校正正式推薦":
+                    if member_snapshot and member_label in {"人工校正正式推薦", "管理員確認的自動推薦"}:
                         published, published_count = settle_snapshot(member_snapshot, results=results)
                     if not auto_count and not published_count:
                         st.info("目前沒有已結束且可核對的賽事；快照沒有變更。")
                     else:
                         store.save_settled_snapshots(sport, day, settled_auto, published)
+                        st.session_state["last_diagnostic"] = record("settlement",sport=sport,event_count=max(auto_count,published_count))
                         st.success(f"已回查 {max(auto_count, published_count)} 場已結束賽事；會員端現在可查看綠／紅結算與命中率。")
                         st.rerun()
             except (ProviderError, StorageError) as exc:
+                st.session_state["last_diagnostic"] = record("settlement",sport=sport,error=exc)
                 st.error(str(exc))
-            except Exception:
+            except Exception as exc:
+                st.session_state["last_diagnostic"] = record("settlement",sport=sport,error=exc)
                 st.error("本次回查未完成；既有快照沒有被覆蓋。請稍後再試。")
     with st.expander("資料來源與安全規則"):
         st.write("MLB：MLB Stats API（球隊打擊／投球、預定先發）＋ The Odds API（讓分／大小線）。")
         st.write("NBA：ESPN（賽程、球隊得失分與賽季勝率）＋ The Odds API（讓分／大小線）。")
         st.write("足球：API-Football（主客場攻守、近期狀態、傷停）＋ ESPN 公開資料備援（賽程、賽果、積分／進失球）＋ The Odds API（讓分／大小線）。")
-        st.write("機率由球隊／球員資料計算；市場只提供實際讓分與大小線。缺線時會標記模型基準線，絕不偽裝成實際可下注盤。")
+        st.write("機率為未校準模型估計。價格僅用於計算估計期望報酬，不是調高機率的工具；機率高不等於值得下注。")
+    diagnostic = st.session_state.get("last_diagnostic")
+    if diagnostic:
+        st.caption(f"追蹤碼：{diagnostic['id']}｜{diagnostic['status']}｜{VERSION}")
+        safe_text = "\n".join(f"{k}: {v}" for k,v in diagnostic.items())
+        st.download_button("下載安全診斷摘要",safe_text,file_name="vidali-diagnostic.txt",mime="text/plain")
+    st.link_button("錯誤回報／修正進度", "https://github.com/lyuwei0623-dali/sportV1/issues")
 
 
 def main() -> None:
@@ -274,8 +307,12 @@ def main() -> None:
         else:
             _member_page(store)
     except StorageError as exc:
+        record("storage",error=exc)
         st.error(str(exc))
         st.caption("為保護已保存內容，APP 不會自動改用可能在重新部署後遺失的暫存資料庫。")
+    except Exception as exc:
+        report = record("render",error=exc)
+        st.error(f"頁面暫時無法完成，已保留既有資料。追蹤碼：{report['id']}")
     if st.session_state.get("role") and st.button("登出"):
         st.session_state.clear()
         st.rerun()

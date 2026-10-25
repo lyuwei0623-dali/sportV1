@@ -1,237 +1,148 @@
-"""Transparent, probability-first forecasting for the clean rebuild.
+"""Experimental, uncalibrated model signals and price-aware estimated EV.
 
-The member-facing questions are deliberately simple:
-
-* Which *team* has the higher win probability?
-* At the saved handicap, which side has the higher cover probability?
-* At the saved total, is over or under more likely to pass?
-
-Bookmaker prices and price-derived value scores do not enter this module. When
-a real handicap or total line is temporarily unavailable, a clearly-labelled model reference line
-keeps the automatic snapshot complete without pretending that it is a live
-betting line.
+No bookmaker-equivalence claim. Actionable recommendations remain disabled
+until an independently reviewed out-of-time calibration is implemented.
 """
 from __future__ import annotations
-
 import math
-
 from models import Market, Projection, Recommendation
-
+from settlement_math import OUTCOMES, components, settle, profit
 
 MAX_GOALS = 8
 
-
-def poisson(value: int, rate: float) -> float:
-    if value < 0 or rate <= 0:
+def poisson(value, rate):
+    if not math.isfinite(rate) or rate < 0:
+        raise ValueError("無效得分均值")
+    if value < 0:
         return 0.0
-    return math.exp(-rate) * rate**value / math.factorial(value)
+    if rate == 0:
+        return float(value == 0)
+    return math.exp(-rate + value * math.log(rate) - math.lgamma(value + 1))
 
-
-def score_matrix(home_rate: float, away_rate: float, maximum: int = MAX_GOALS) -> dict[tuple[int, int], float]:
-    """Return a truncated, re-normalised independent Poisson score grid."""
-
-    raw = {(home, away): poisson(home, home_rate) * poisson(away, away_rate)
-           for home in range(maximum + 1) for away in range(maximum + 1)}
+def score_matrix(home_rate, away_rate, maximum=MAX_GOALS):
+    for rate in (home_rate, away_rate):
+        if not math.isfinite(rate) or not 0 <= rate <= 50:
+            raise ValueError("得分均值超出模型支援範圍")
+    maximum = max(maximum, int(max(home_rate, away_rate) + 12 * math.sqrt(max(home_rate, away_rate) + 1) + 12))
+    hp = [poisson(n, home_rate) for n in range(maximum + 1)]
+    ap = [poisson(n, away_rate) for n in range(maximum + 1)]
+    raw = {(h, a): hp[h] * ap[a] for h in range(maximum + 1) for a in range(maximum + 1)}
     total = sum(raw.values())
-    return {key: value / total for key, value in raw.items()} if total else raw
+    return {key: value / total for key, value in raw.items()}
 
+def outcome_probabilities(matrix):
+    return tuple(sum(p for (h, a), p in matrix.items() if check(h, a))
+                 for check in (lambda h,a:h>a, lambda h,a:h==a, lambda h,a:h<a))
 
-def outcome_probabilities(matrix: dict[tuple[int, int], float]) -> tuple[float, float, float]:
-    home = sum(probability for (left, right), probability in matrix.items() if left > right)
-    draw = sum(probability for (left, right), probability in matrix.items() if left == right)
-    away = sum(probability for (left, right), probability in matrix.items() if left < right)
-    return home, draw, away
+def _main_score(matrix, home_win=None, away_win=None):
+    return max(matrix.items(), key=lambda item: item[1])
 
-
-def _main_score(matrix: dict[tuple[int, int], float], home_win: float, away_win: float) -> tuple[tuple[int, int], float]:
-    """Pick a score within the higher-win-probability team's scenario.
-
-    This prevents a generic draw such as 1:1 from becoming the displayed main
-    prediction merely because it is the largest *unconditional* individual
-    score cell. The shown percentage stays unconditional and is therefore
-    honest about correct-score uncertainty.
-    """
-
-    if home_win >= away_win:
-        candidates = {score: probability for score, probability in matrix.items() if score[0] > score[1]}
-    else:
-        candidates = {score: probability for score, probability in matrix.items() if score[1] > score[0]}
-    return max(candidates.items(), key=lambda item: item[1]) if candidates else max(matrix.items(), key=lambda item: item[1])
-
-
-def score_projection(home_rate: float, away_rate: float, quality: str) -> Projection:
-    """Build a football projection from team / player inputs only."""
-
+def score_projection(home_rate, away_rate, quality):
+    home_rate, away_rate = round(home_rate, 2), round(away_rate, 2)
     matrix = score_matrix(home_rate, away_rate)
     home, draw, away = outcome_probabilities(matrix)
-    score, probability = _main_score(matrix, home, away)
-    return Projection(
-        home_expected=round(home_rate, 2), away_expected=round(away_rate, 2),
-        home_win=home, draw=draw, away_win=away,
-        score=f"{score[0]}:{score[1]}", score_probability=probability,
-        source_quality=quality,
-    )
+    score, probability = _main_score(matrix)
+    return Projection(home_rate, away_rate, home, draw, away, f"{score[0]}:{score[1]}", probability, quality,
+                      ("獨立卜瓦松模型；未完成樣本外校準", "足球按正規 90 分鐘含補時，不含延長／PK"))
 
+def baseball_matrix(home_rate, away_rate):
+    # Explicit approximate extra-inning assumption, consistent across markets.
+    raw = score_matrix(home_rate, away_rate, maximum=12)
+    result = {}
+    for (h, a), p in raw.items():
+        outcomes = [((h+1,a),p/2), ((h,a+1),p/2)] if h == a else [((h,a),p)]
+        for score, weight in outcomes:
+            result[score] = result.get(score, 0) + weight
+    return result
 
-def baseball_projection(home_rate: float, away_rate: float, quality: str) -> Projection:
-    """Build an MLB win projection; terminal tie mass is split evenly."""
+def baseball_projection(home_rate, away_rate, quality):
+    home_rate, away_rate = round(home_rate, 2), round(away_rate, 2)
+    matrix = baseball_matrix(home_rate, away_rate)
+    home, _, away = outcome_probabilities(matrix)
+    score, probability = _main_score(matrix)
+    return Projection(home_rate, away_rate, home, None, away, f"{score[0]}:{score[1]}", probability, quality,
+                      ("未完成樣本外校準", "延長賽採對半一分決勝近似，非完整延長賽模型"))
 
-    matrix = score_matrix(home_rate, away_rate, maximum=12)
-    home, draw, away = outcome_probabilities(matrix)
-    home += draw / 2
-    away += draw / 2
-    score, probability = _main_score(matrix, home, away)
-    return Projection(round(home_rate, 2), round(away_rate, 2), home, None, away,
-                      f"{score[0]}:{score[1]}", probability, quality)
-
-
-def _normal_cdf(value: float) -> float:
+def _normal_cdf(value):
     return .5 * (1 + math.erf(value / math.sqrt(2)))
 
+def normal_integer_distribution(mean, sd, *, no_zero=False):
+    if not math.isfinite(mean) or not math.isfinite(sd) or sd <= 0:
+        raise ValueError("無效常態分布參數")
+    low, high = math.floor(mean-10*sd), math.ceil(mean+10*sd)
+    values = {n: _normal_cdf((n+.5-mean)/sd)-_normal_cdf((n-.5-mean)/sd) for n in range(low,high+1)}
+    if no_zero:
+        tie = values.pop(0, 0)
+        values[1] = values.get(1,0) + tie/2
+        values[-1] = values.get(-1,0) + tie/2
+    mass = sum(values.values())
+    return {k:v/mass for k,v in values.items()}
 
-def basketball_projection(home_points: float, away_points: float, quality: str) -> Projection:
-    """NBA projection using scoring means and a conservative score-difference SD."""
+def basketball_projection(home_points, away_points, quality):
+    home_points, away_points = round(home_points,1), round(away_points,1)
+    diff = normal_integer_distribution(home_points-away_points,14.5,no_zero=True)
+    home = sum(p for n,p in diff.items() if n>0)
+    return Projection(home_points,away_points,home,None,1-home,f"{round(home_points)}:{round(away_points)}",0,quality,
+                      ("分差 SD=14.5／總分 SD=18.5 為未校準假設", "未建模現役名單、傷停、休息天數與輪換"))
 
-    difference = home_points - away_points
-    home_win = _normal_cdf(difference / 14.5)
-    return Projection(round(home_points, 1), round(away_points, 1), home_win, None, 1 - home_win,
-                      f"{round(home_points)}:{round(away_points)}", 0.0, quality)
+def _asian_components(line):
+    return components(line)
 
-
-def _asian_components(line: float) -> tuple[float, ...]:
-    """Split quarter Asian lines into half-stakes; leave other lines intact."""
-
-    scaled = round(line * 4)
-    if abs(scaled) % 2:
-        return math.floor(line * 2) / 2, math.ceil(line * 2) / 2
-    return (line,)
-
-
-def asian_cover_probability(matrix: dict[tuple[int, int], float], *, side: str, line: float,
-                            market_type: str) -> float:
-    """Probability of a net-positive settlement; pushes are not counted."""
-
-    probability = 0.0
-    components = _asian_components(line)
-    for score, weight in matrix.items():
+def asian_distribution(matrix, *, side, line, market_type):
+    result = dict.fromkeys(OUTCOMES, 0.0)
+    for (h,a), weight in matrix.items():
         if market_type == "spread":
-            difference = score[0] - score[1]
-            base = difference if side == "home" else -difference
-            settled = sum(1 if base + part > 0 else -1 if base + part < 0 else 0 for part in components) / len(components)
+            outcome = settle(h-a if side=="home" else a-h, line)
         else:
-            goals = score[0] + score[1]
-            # For totals, the line is subtracted for over and subtracted from
-            # the line for under.  (Using the same sign as a spread would
-            # incorrectly make every positive total an "over".)
-            settled = sum(
-                1 if ((goals - part) if side == "over" else (part - goals)) > 0
-                else -1 if ((goals - part) if side == "over" else (part - goals)) < 0
-                else 0
-                for part in components
-            ) / len(components)
-        if settled > 0:
-            probability += weight
-    return probability
+            outcome = settle(h+a, -line) if side=="over" else settle(-h-a, line)
+        result[outcome] += weight
+    return result
 
+def asian_cover_probability(matrix, *, side, line, market_type):
+    d = asian_distribution(matrix,side=side,line=line,market_type=market_type)
+    return d["won"]+d["half_won"]
 
-def _round_to_step(value: float, step: float) -> float:
-    return round(value / step) * step
+def _pick(kind, state, side, line, dist, market, reason):
+    labels = {"home":"主隊", "away":"客隊", "draw":"和局", "over":"大分", "under":"小分"}
+    selection = labels[side]+("勝" if kind=="moneyline" and side!="draw" else "")
+    if kind != "moneyline":
+        shown = -line if kind=="spread" and side=="away" else line
+        selection += f" {shown:+g}" if kind=="spread" else f" {shown:g}"
+    price = (market.prices.get(f"{kind}:{side}") if market and state != "model_reference" else None)
+    ev = sum(dist[k]*profit(k,price) for k in OUTCOMES) if price is not None else None
+    return Recommendation(kind,state,selection,dist["won"]+dist["half_won"],line,reason,
+                          side,price,ev,dist,False,
+                          "PASS｜無實際盤口" if state=="model_reference" else
+                          "PASS｜缺少賠率，無法評估價值" if price is None else "PASS｜模型尚未完成樣本外校準")
 
-
-def _model_spread_line(projection: Projection, sport: str) -> float:
-    """Return a transparent reference handicap when no real line is saved."""
-
-    step = 0.5 if sport == "mlb" else 0.25
-    line = -_round_to_step(projection.home_expected - projection.away_expected, step)
-    return 0.0 if abs(line) < .001 else line
-
-
-def _model_total_line(projection: Projection, sport: str) -> float:
-    step = 0.5 if sport == "mlb" else 0.25
-    return _round_to_step(projection.home_expected + projection.away_expected, step)
-
-
-def _line_source(actual_line: float | None, fallback_line: float, *, kind: str) -> tuple[str, float, str]:
-    if actual_line is not None:
-        label = "保存的實際讓分線" if kind == "spread" else "保存的實際大小線"
-        return "market_line", actual_line, label
-    label = "尚無實際讓分線，使用模型基準線（非可下注盤）" if kind == "spread" else "尚無實際大小線，使用模型基準線（非可下注盤）"
-    return "model_reference", fallback_line, label
-
-
-def probability_recommendations(projection: Projection, market: Market | None, *, sport: str) -> tuple[Recommendation, ...]:
-    """Return one plain-language probability statement per required category."""
-
-    if sport == "nba":
-        return basketball_probability_recommendations(projection, market)
-    matrix = score_matrix(projection.home_expected, projection.away_expected,
-                          maximum=12 if sport == "mlb" else MAX_GOALS)
-    labels = {"home": "主隊", "away": "客隊", "over": "大分", "under": "小分"}
-
-    # The direct member question is which TEAM is more likely to win. A draw
-    # remains visible separately for football, but is never substituted for a
-    # team answer in the win-probability card.
-    win_probability, winner = max((projection.home_win, "home"), (projection.away_win, "away"))
-    moneyline = Recommendation(
-        "moneyline", "model", f"{labels[winner]}勝", win_probability, None,
-        "以球隊、球員／先發與可用傷停資料計算；足球和局機率另列",
-    )
-
-    spread_state, spread_line, spread_reason = _line_source(
-        market.spread_line if market else None, _model_spread_line(projection, sport), kind="spread"
-    )
-    spread_candidates = []
-    for side in ("home", "away"):
-        side_line = spread_line if side == "home" else -spread_line
-        spread_candidates.append((
-            asian_cover_probability(matrix, side=side, line=side_line, market_type="spread"), side, side_line,
-        ))
-    spread_probability, spread_side, displayed_spread_line = max(spread_candidates)
-    spread = Recommendation(
-        "spread", spread_state, f"{labels[spread_side]} {displayed_spread_line:+g}",
-        spread_probability, spread_line, spread_reason,
-    )
-
-    total_state, total_line, total_reason = _line_source(
-        market.total_line if market else None, _model_total_line(projection, sport), kind="total"
-    )
-    total_candidates = [
-        (asian_cover_probability(matrix, side=side, line=total_line, market_type="total"), side)
-        for side in ("over", "under")
-    ]
-    total_probability, total_side = max(total_candidates)
-    total = Recommendation(
-        "total", total_state, f"{labels[total_side]} {total_line:g}",
-        total_probability, total_line, total_reason,
-    )
-    return moneyline, spread, total
-
-
-def basketball_probability_recommendations(projection: Projection, market: Market | None) -> tuple[Recommendation, ...]:
-    """Direct NBA win / cover / total probabilities without odds prices."""
-
-    labels = {"home": "主隊", "away": "客隊", "over": "大分", "under": "小分"}
+def probability_recommendations(projection, market, *, sport):
     winner = "home" if projection.home_win >= projection.away_win else "away"
-    win_probability = projection.home_win if winner == "home" else projection.away_win
-    moneyline = Recommendation("moneyline", "model", f"{labels[winner]}勝", win_probability, None,
-                               "以球隊得失分與賽季勝率計算")
-    mean_diff = projection.home_expected - projection.away_expected
-    spread_state, spread_line, spread_reason = _line_source(
-        market.spread_line if market else None, -_round_to_step(mean_diff, .5), kind="spread"
-    )
-    home_cover = _normal_cdf((mean_diff + spread_line) / 14.5)
-    away_cover = _normal_cdf((-mean_diff - spread_line) / 14.5)
-    spread_probability, side = max((home_cover, "home"), (away_cover, "away"))
-    shown_line = spread_line if side == "home" else -spread_line
-    spread = Recommendation("spread", spread_state, f"{labels[side]} {shown_line:+g}", spread_probability,
-                            spread_line, spread_reason)
-    total_state, total_line, total_reason = _line_source(
-        market.total_line if market else None,
-        _round_to_step(projection.home_expected + projection.away_expected, .5), kind="total"
-    )
-    over_probability = 1 - _normal_cdf((total_line - (projection.home_expected + projection.away_expected)) / 18.5)
-    under_probability = 1 - over_probability
-    total_probability, total_side = max((over_probability, "over"), (under_probability, "under"))
-    total = Recommendation("total", total_state, f"{labels[total_side]} {total_line:g}", total_probability,
-                           total_line, total_reason)
-    return moneyline, spread, total
+    win = projection.home_win if winner=="home" else projection.away_win
+    dist = dict.fromkeys(OUTCOMES,0.0)
+    dist.update(won=win,lost=1-win)
+    picks = [_pick("moneyline","model",winner,None,dist,market,"模型估計，不代表實測命中率；足球和局另列")]
+    matrix = None if sport=="nba" else (baseball_matrix(projection.home_expected,projection.away_expected) if sport=="mlb" else score_matrix(projection.home_expected,projection.away_expected))
+    for kind in ("spread","total"):
+        actual = getattr(market,f"{kind}_line",None)
+        reference = (-(projection.home_expected-projection.away_expected) if kind=="spread" else projection.home_expected+projection.away_expected)
+        line = actual if actual is not None else round(reference*2)/2
+        state = "market_line" if actual is not None else "model_reference"
+        reason = "保存的實際盤口線" if actual is not None else "模型參考線，非可下注盤，不計入實盤績效"
+        candidates=[]
+        for side in (("home","away") if kind=="spread" else ("over","under")):
+            side_line = -line if kind=="spread" and side=="away" else line
+            if sport=="nba":
+                values = normal_integer_distribution(projection.home_expected-projection.away_expected,14.5,no_zero=True) if kind=="spread" else normal_integer_distribution(projection.home_expected+projection.away_expected,18.5)
+                d = dict.fromkeys(OUTCOMES,0.0)
+                for n,p in values.items():
+                    outcome = settle(n if side=="home" else -n,side_line) if kind=="spread" else (settle(n,-line) if side=="over" else settle(-n,line))
+                    d[outcome] += p
+            else:
+                d = asian_distribution(matrix,side=side,line=side_line,market_type=kind)
+            candidates.append(_pick(kind,state,side,line,d,market,reason))
+        price_complete = all(c.expected_return is not None for c in candidates)
+        picks.append(max(candidates,key=lambda c:c.expected_return if price_complete else c.model_probability))
+    return tuple(picks)
+
+def basketball_probability_recommendations(projection, market):
+    return probability_recommendations(projection,market,sport="nba")

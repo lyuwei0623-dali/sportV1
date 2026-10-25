@@ -1,0 +1,26 @@
+name: 維大力體育錯誤回報
+description: 只填安全摘要，請勿貼密碼、API Key、原始JSON或會員資料。
+title: '[APP錯誤] '
+body:
+  - type: dropdown
+    id: sport
+    attributes:
+      label: 運動／功能
+      options: [MLB, NBA, 歐洲足球, 登入, 快照保存, 賽後回查]
+    validations:
+      required: true
+  - type: input
+    id: date
+    attributes:
+      label: 查詢日期（台灣時間）
+  - type: input
+    id: trace
+    attributes:
+      label: APP顯示的追蹤碼與版本
+  - type: textarea
+    id: details
+    attributes:
+      label: 操作、預期與實際結果
+      description: 不要貼金鑰或登入密碼；截圖先遮蔽個人資訊。
+    validations:
+      required: true
