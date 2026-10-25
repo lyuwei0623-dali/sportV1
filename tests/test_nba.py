@@ -20,7 +20,7 @@ class NbaTests(TestCase):
             {"team": {"id": "1"}, "stats": [{"name": "wins", "value": 50}, {"name": "losses", "value": 32}, {"name": "avgPointsFor", "value": 116}, {"name": "avgPointsAgainst", "value": 112}]},
             {"team": {"id": "2"}, "stats": [{"name": "wins", "value": 40}, {"name": "losses", "value": 42}, {"name": "avgPointsFor", "value": 111}, {"name": "avgPointsAgainst", "value": 114}]},
         ]}}]}
-        with patch("providers._get", side_effect=[scoreboard, current, previous]):
+        with patch("providers._get", side_effect=[scoreboard, scoreboard, current, previous]):
             events = fetch_nba_events(date(2026, 10, 21))
             profiles = fetch_nba_team_profiles(events, date(2026, 10, 21))
         self.assertEqual(events[0].home, "Home Team")

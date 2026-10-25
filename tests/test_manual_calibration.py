@@ -16,7 +16,8 @@ class ManualCalibrationTest(unittest.TestCase):
             "date_key": "2026-10-19",
             "generated_at": "2026-10-19T00:00:00+00:00",
             "events": [{
-                "event": {"event_id": "football:one", "home": "Home", "away": "Away"},
+                "event": {"event_id": "football:one", "home": "Home", "away": "Away", "kickoff":"2026-10-19T12:00:00Z"},
+                "capture_schema":3,
                 "projection": asdict(projection),
                 "market": None,
                 "recommendations": [],

@@ -1,10 +1,11 @@
 """Read-only member presentation for saved probability snapshots."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape
 from typing import Any
 from zoneinfo import ZoneInfo
+from time_utils import parse_time
 
 
 TZ_TAIPEI = ZoneInfo("Asia/Taipei")
@@ -125,14 +126,27 @@ def _recommendation(value: dict[str, Any], settlement: dict[str, Any] | None = N
         "unavailable": "資料不足",
     }.get(state, "資料不足")
     if probability is None:
-        detail = reason or "尚無足夠資料"
+        detail = escape(reason or "尚無足夠資料")
     elif state == "model_reference":
-        detail = f"{metric} {_pct(probability)}<br>模型基準回測"
+        detail = f"{metric} {_pct(probability)}<br>非實盤，不計入績效"
     else:
         detail = f"{metric} {_pct(probability)}"
     outcome = (settlement or {}).get("outcome")
-    outcome_label = {"won": "✓ 命中", "lost": "✕ 未過盤", "push": "— 走盤／和局"}.get(outcome, "")
-    outcome_class = f" settled-{outcome}" if outcome else ""
+    distribution = value.get("settlement_probabilities") or {}
+    if distribution and market_type!="moneyline":
+        detail += f"<br>全贏 {_pct(distribution.get('won'))}／半贏 {_pct(distribution.get('half_won'))}<br>走 {_pct(distribution.get('push'))}／半輸 {_pct(distribution.get('half_lost'))}／全輸 {_pct(distribution.get('lost'))}"
+    price, ev = value.get("decimal_price"), value.get("expected_return")
+    if price is not None:
+        detail += f"<br>賠率 {float(price):.3f}"
+    if ev is not None:
+        detail += f"<br>估計 EV {float(ev):+.1%}（未驗證）"
+    decision = value.get("decision","PASS｜舊版模型未驗證")
+    detail += f"<br>{escape(str(decision))}"
+    outcome_label = {"won":"✓ 全贏", "half_won":"✓ 半贏", "lost":"✕ 全輸", "half_lost":"✕ 半輸", "push":"— 走盤"}.get(outcome, "")
+    if outcome and not (settlement or {}).get("evaluation_eligible",False):
+        outcome_label += "（舊版／時間不明，不計績效）"
+    css_outcome = {"half_won":"won","half_lost":"lost"}.get(outcome,outcome)
+    outcome_class = f" settled-{css_outcome}" if css_outcome in {"won","lost","push"} else ""
     return (
         f'<div class="pick {escape(state)}{outcome_class}"><b>{escape(label)}</b><br>{escape(title)}'
         f'<br><small>{detail}</small>{f"<br><b>{outcome_label}</b>" if outcome_label else ""}</div>'
@@ -160,6 +174,13 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
     if not events:
         st.info("這個日期沒有已保存賽事。")
         return
+    st.warning("目前為未校準模型分析，不是已驗證的下注推薦。機率高不等於值得下注；請勿將模型百分比當成實測準確率。")
+    stamp = parse_time(snapshot.get("generated_at"))
+    st.caption(f"快照時間（台灣）：{_time(snapshot.get('generated_at',''))}｜版本：{snapshot.get('version','舊版')}｜盤口不是即時畫面")
+    if stamp is None or (datetime.now(timezone.utc)-stamp).total_seconds()>1800:
+        st.warning("這份快照已超過30分鐘或時間不明，盤口／先發可能已變動；歷史資料僅供回查。")
+    if snapshot.get("version","").startswith("restart"):
+        st.info("這是稽核修正前的舊版預測。已保留原始內容；請重新執行賽後回查以修正結算，舊版不納入新版績效。")
     if sport == "football":
         title = "歐洲足球｜當日賽事分析"
         headers = ["開賽（台灣）", "對戰", "預估進球", "主預測比分", "賽果機率", "最終比分", "勝率最高", "讓分過盤率", "大小過盤率", "模型資料／風險"]
@@ -172,15 +193,21 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
     html = [_style(), f'<div class="snapshot-title">{escape(title)}｜{escape(release_label)}</div>', '<div class="snapshot-wrap"><table class="snapshot"><thead><tr>']
     html.extend(f"<th>{escape(header)}</th>" for header in headers)
     html.append("</tr></thead><tbody>")
-    summary = snapshot.get("settlement_summary") or {}
+    summary = snapshot.get("settlement_summary") or {} if snapshot.get("settlement_version")=="audit-v3.0" else {}
     if summary:
         stats = []
         for kind, label in (("moneyline", "獨贏"), ("spread", "讓分"), ("total", "大小")):
             row = summary.get(kind, {})
-            won, lost, push = int(row.get("won", 0)), int(row.get("lost", 0)), int(row.get("push", 0))
-            decided = won + lost
-            rate = f"{won / decided * 100:.1f}%" if decided else "—"
-            stats.append(f'<div class="settlement-stat">{label}：{won} 綠／{lost} 紅／{push} 走｜命中率 <b>{rate}</b></div>')
+            won,lost,push,half_won,half_lost = (int(row.get(k,0)) for k in ("won","lost","push","half_won","half_lost"))
+            decided = won+lost+half_won+half_lost
+            rate = f"{(won+half_won)/decided:.1%}" if decided else "—"
+            text = f"{label}（模型觀察，非實盤）：全贏{won}／半贏{half_won}／走{push}／半輸{half_lost}／全輸{lost}｜正收益比例 {rate}｜樣本 {decided}"
+            if row.get("priced_count",0):
+                text += f"｜模擬 ROI {float(row.get('net_units',0))/row['priced_count']:+.1%}（有賠率{row['priced_count']}筆）"
+            if row.get("brier_count",0):
+                text += f"｜Brier {row['brier_sum']/row['brier_count']:.3f}"
+            text += f"｜排除{row.get('excluded',0)}筆"
+            stats.append(f'<div class="settlement-stat">{escape(text)}</div>')
         html.insert(1, '<div class="settlement-summary">' + "".join(stats) + '</div>')
     current_league = None
     for item in events:
@@ -194,8 +221,17 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
         if sport == "football" and event.get("league") != current_league:
             current_league = event.get("league")
             html.append(f'<tr class="league-row"><td colspan="10">{escape(str(current_league))}</td></tr>')
-        matchup = f"{display_team(str(event.get('away', '客隊')))}（客）<br>vs<br>{display_team(str(event.get('home', '主隊')))}（主）"
+        matchup = f"{escape(display_team(str(event.get('away', '客隊'))))}（客）<br>vs<br>{escape(display_team(str(event.get('home', '主隊'))))}（主）"
         warnings = "<br>".join(escape(str(entry)) for entry in item.get("warnings", [])) or "—"
+        market = item.get("market") or {}
+        if market:
+            warnings += f"<br>盤源：{escape(str(market.get('bookmaker','未提供')))}<br>盤口時間：{_time(market.get('updated_at',''))}"
+        if projection:
+            warnings += "<br>" + "<br>".join(escape(str(n)) for n in projection.get("notes",[]))
+        history = item.get("prediction_history",[])
+        if len(history)>1:
+            first_market = history[0].get("market") or {}
+            warnings += f"<br>首次保存讓分／大小：{escape(str(first_market.get('spread_line','—')))}／{escape(str(first_market.get('total_line','—')))}<br>保留修訂：{len(history)} 筆"
         if projection:
             expected = f"主 {float(projection['home_expected']):.2f}<br>客 {float(projection['away_expected']):.2f}"
             if sport == "football":
@@ -224,5 +260,5 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
                          f'<span class="warning">{warnings}</span>']
         html.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
     html.append("</tbody></table></div>")
-    st.caption("所有百分比都由保存的球隊、球員／先發與傷停資料計算。讓分與大小優先採保存的實際線；「模型基準線」不是可下注盤。機率不保證結果。")
+    st.caption("機率使用可取得的球隊統計；球員／傷停／輪換未完整建模。足球結算為90分鐘含補時，不含延長及PK。半贏與半輸分開列；模型參考盤及無賽前時間證據者不計績效。")
     st.markdown("".join(html), unsafe_allow_html=True)

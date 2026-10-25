@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -21,8 +21,15 @@ class StorageError(RuntimeError):
     pass
 
 
+_UNSET = object()
+
+def _check_revision(current, expected):
+    if expected is not _UNSET and (current or {}).get("revision_id") != expected:
+        raise StorageError("另一個管理操作已更新快照；本次沒有覆蓋資料，請重新整理後再試")
+
+
 class SnapshotStore(Protocol):
-    def save_automatic(self, sport: str, date_key: str, payload: dict[str, Any]) -> None: ...
+    def save_automatic(self, sport: str, date_key: str, payload: dict[str, Any], *, expected_revision=_UNSET) -> None: ...
     def publish_automatic(self, sport: str, date_key: str) -> None: ...
     def save_manual_published(self, sport: str, date_key: str, payload: dict[str, Any]) -> None: ...
     def get_member_snapshot(self, sport: str, date_key: str) -> tuple[dict[str, Any] | None, str]: ...
@@ -31,7 +38,7 @@ class SnapshotStore(Protocol):
 
 
 def _now() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _published_label(payload: dict[str, Any]) -> str:
@@ -60,8 +67,11 @@ class LocalSnapshotStore:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def save_automatic(self, sport: str, date_key: str, payload: dict[str, Any]) -> None:
+    def save_automatic(self, sport: str, date_key: str, payload: dict[str, Any], *, expected_revision=_UNSET) -> None:
         with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute("SELECT automatic_payload FROM snapshots WHERE sport=? AND date_key=?",(sport,date_key)).fetchone()
+            _check_revision(json.loads(current[0]) if current and current[0] else None,expected_revision)
             conn.execute("""INSERT INTO snapshots(sport,date_key,automatic_payload,automatic_at)
                 VALUES(?,?,?,?) ON CONFLICT(sport,date_key) DO UPDATE SET
                 automatic_payload=excluded.automatic_payload, automatic_at=excluded.automatic_at""",
@@ -92,7 +102,7 @@ class LocalSnapshotStore:
                 WHERE sport=? AND date_key=?""",
                 (json.dumps(automatic, ensure_ascii=False), _now(),
                  json.dumps(published, ensure_ascii=False) if published is not None else None,
-                 published is not None, _now(), sport, date_key))
+                 "updated" if published is not None else None, _now(), sport, date_key))
 
     def get_member_snapshot(self, sport: str, date_key: str) -> tuple[dict[str, Any] | None, str]:
         with self._connection() as conn:
@@ -146,10 +156,21 @@ class SupabaseSnapshotStore:
         })
         return rows[0] if rows else None
 
-    def save_automatic(self, sport: str, date_key: str, payload: dict[str, Any]) -> None:
+    def save_automatic(self, sport: str, date_key: str, payload: dict[str, Any], *, expected_revision=_UNSET) -> None:
         record = {"sport": sport, "date_key": date_key, "automatic_payload": payload, "automatic_at": _now()}
-        self._request("POST", f"/{self.TABLE}", params={"on_conflict": "sport,date_key"}, body=record,
-                      headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        row = self._row(sport,date_key)
+        _check_revision((row or {}).get("automatic_payload"),expected_revision)
+        if row:
+            timestamp = row.get("automatic_at")
+            rows = self._request("PATCH",f"/{self.TABLE}",params={"sport":f"eq.{sport}","date_key":f"eq.{date_key}",
+                                 "automatic_at":f"eq.{timestamp}" if timestamp else "is.null"},
+                                 body={"automatic_payload":payload,"automatic_at":record["automatic_at"]},
+                                 headers={"Prefer":"return=representation"})
+            if not rows:
+                raise StorageError("快照在儲存期間已變更；本次未覆蓋，請重新整理後再試")
+        else:
+            # No upsert: a simultaneous insert must fail, not overwrite.
+            self._request("POST",f"/{self.TABLE}",body=record,headers={"Prefer":"return=minimal"})
 
     def publish_automatic(self, sport: str, date_key: str) -> None:
         row = self._row(sport, date_key)
