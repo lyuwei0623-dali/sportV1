@@ -92,7 +92,7 @@ class DailySnapshot:
     generated_at: str
     events: tuple[EventAnalysis, ...]
     source_summary: tuple[str, ...]
-    version: str = "audit-v3.0"
+    version: str = "audit-v3.1"
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

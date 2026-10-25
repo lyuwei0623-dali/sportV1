@@ -10,14 +10,15 @@ from datetime import datetime
 from pathlib import Path
 from urllib.request import Request,urlopen
 from providers import fetch_mlb_events,fetch_nba_events,fetch_espn_football_events
-from time_utils import TAIPEI,taiwan_day_matches
+from time_utils import TAIPEI,session_day_matches,session_label,SESSION_POLICY
+from service import fetch_session_events
 from diagnostics import VERSION
 
 def probe(name,fetch,day):
     try:
-        rows=fetch(day)
+        rows=fetch_session_events(fetch,day)
         ids=[e.event_id for e in rows]
-        valid=len(ids)==len(set(ids)) and all(taiwan_day_matches(e.kickoff,day) for e in rows)
+        valid=len(ids)==len(set(ids)) and all(session_day_matches(e.kickoff,day) for e in rows)
         return {"source":name,"status":"ok" if valid else "invalid_schema_or_date","events":len(rows),
                 "coverage":"未與第二來源交叉驗證"}
     except Exception:
@@ -41,7 +42,7 @@ def main():
                  [("mlb",fetch_mlb_events),("nba",fetch_nba_events),("football",fetch_espn_football_events)]]
         checks=[f.result() for f in futures]
     checks.append(app_probe())
-    report={"version":VERSION,"date_taipei":day.isoformat(),"checks":checks,
+    report={"version":VERSION,"date_taipei":day.isoformat(),"date_policy":SESSION_POLICY,"query_window":session_label(day),"checks":checks,
             "not_checked":["登入憑證","Supabase寫入","付費盤口API","傷停完整性","模型準確度"]}
     text=json.dumps(report,ensure_ascii=False,indent=2)
     Path(args.output).write_text(text,encoding="utf-8")

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from time_utils import parse_time
 
-VERSION = "audit-v3.0"
+VERSION = "audit-v3.1"
 
 def record(stage, *, sport="", error=None, event_count=None):
     report = {"id":uuid.uuid4().hex[:12], "version":VERSION,

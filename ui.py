@@ -1,11 +1,12 @@
 """Read-only member presentation for saved probability snapshots."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from html import escape
 from typing import Any
 from zoneinfo import ZoneInfo
-from time_utils import parse_time
+from time_utils import parse_time, filter_snapshot_window, session_label, SESSION_POLICY
+import unicodedata
 
 
 TZ_TAIPEI = ZoneInfo("Asia/Taipei")
@@ -88,11 +89,23 @@ TEAM_NAMES = {
     # 歐冠常見名稱補充
     "Slovan Bratislava": "布拉迪斯拉發", "Pafos": "帕福斯", "Kairat Almaty": "阿拉木圖凱拉特",
     "FC Copenhagen": "哥本哈根", "Olympique de Marseille": "馬賽", "Galatasaray SK": "加拉塔沙雷",
+    "LA Lakers": "洛杉磯湖人", "Oakland Athletics": "奧克蘭運動家",
+    "Atletico de Madrid": "馬德里競技", "Bayern München": "拜仁慕尼黑",
+    "Borussia Mönchengladbach": "慕遜加柏", "Paris Saint-Germain FC": "巴黎聖日耳曼",
 }
 
 
+def _display_key(name: str) -> str:
+    text = unicodedata.normalize("NFKD", name).casefold()
+    return "".join(c for c in text if c.isalnum() and not unicodedata.combining(c))
+
+
+_TEAM_DISPLAY_INDEX = {_display_key(name): label for name, label in TEAM_NAMES.items()}
+
+
 def display_team(name: str) -> str:
-    return TEAM_NAMES.get(name, name)
+    # Presentation only: never replace canonical provider names or event IDs.
+    return TEAM_NAMES.get(name, _TEAM_DISPLAY_INDEX.get(_display_key(name), name))
 
 
 def _time(value: str) -> str:
@@ -169,10 +182,22 @@ def _style() -> str:
 
 
 def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> None:
+    snapshot = filter_snapshot_window(snapshot)
+    try:
+        st.caption(session_label(date.fromisoformat(str(snapshot.get("date_key", "")))))
+    except ValueError:
+        st.error("快照缺少有效賽事日期，已停止顯示；請重新建立快照。")
+        return
+    if snapshot.get("date_policy") != SESSION_POLICY:
+        st.info("這份舊快照已依新賽事日範圍篩選，但未補抓隔日賽程。管理員請重新建立此賽事日的自動快照；人工發布版需重新校正發布。")
+    if snapshot.get("window_archived_events"):
+        st.caption(f"已隱藏 {len(snapshot['window_archived_events'])} 筆範圍外／重複舊紀錄；原始內容保留於封存，不列入本次賽事。")
+    if snapshot.get("window_summary_needs_refresh"):
+        st.info("舊命中率包含已排除場次，暫不顯示；管理員執行賽後回查即可更新本賽事日統計。")
     sport = snapshot.get("sport", "")
     events = snapshot.get("events", [])
     if not events:
-        st.info("這個日期沒有已保存賽事。")
+        st.info("這個賽事日範圍內沒有已保存賽事，請管理員重新建立快照；不代表來源沒有比賽。")
         return
     st.warning("目前為未校準模型分析，不是已驗證的下注推薦。機率高不等於值得下注；請勿將模型百分比當成實測準確率。")
     stamp = parse_time(snapshot.get("generated_at"))

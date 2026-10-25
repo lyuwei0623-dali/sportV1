@@ -15,10 +15,11 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
-from providers import ProviderError, fetch_final_results
-from service import apply_manual_calibration, build_football_snapshot, build_mlb_snapshot, build_nba_snapshot, save_snapshot, settle_snapshot
+from providers import ProviderError
+from service import apply_manual_calibration, build_football_snapshot, build_mlb_snapshot, build_nba_snapshot, save_snapshot, settle_snapshot, fetch_session_results
 from storage import StorageError, create_store
-from ui import render_snapshot
+from ui import render_snapshot, display_team, _time
+from time_utils import filter_snapshot_window, session_label
 from auth import verify_password, credential_version
 from diagnostics import record, snapshot_health, VERSION
 
@@ -55,6 +56,7 @@ def _brand() -> None:
     with heading:
         st.title(APP_NAME)
         st.caption("保存後才展示｜勝率與過盤率｜會員唯讀快照")
+        st.caption(f"程式版本：{VERSION}")
     st.divider()
 
 
@@ -131,6 +133,9 @@ def _manual_defaults(snapshot: dict | None) -> dict[str, tuple[float, float]]:
 def _manual_calibration_panel(st, store, automatic: dict, sport: str, day: str, sport_label: str) -> None:
     """Admin-only form for a complete manual handicap / total recalculation."""
 
+    automatic = filter_snapshot_window(automatic)
+    if not automatic.get("events"):
+        return
     active_snapshot, active_label = store.get_member_snapshot(sport, day)
     defaults = _manual_defaults(active_snapshot)
     st.divider()
@@ -148,8 +153,9 @@ def _manual_calibration_panel(st, store, automatic: dict, sport: str, day: str, 
         for index, item in enumerate(automatic.get("events", []), start=1):
             event = item.get("event", {})
             event_id = str(event.get("event_id", ""))
-            home, away = str(event.get("home", "主隊")), str(event.get("away", "客隊"))
+            home, away = display_team(str(event.get("home", "主隊"))), display_team(str(event.get("away", "客隊")))
             st.markdown(f"**{index}. {away}（客） vs {home}（主）**")
+            st.caption(f"開賽（台灣）：{_time(event.get('kickoff', ''))}")
             if not event_id or not item.get("projection"):
                 missing_model.append(f"{away} vs {home}")
                 st.error("這場自動快照缺少球隊模型資料；不能只靠人工盤口產生機率。請先重新建立完整自動快照。")
@@ -208,7 +214,8 @@ def _member_page(store) -> None:
     _brand()
     sport_label = st.radio("賽事類別", ["MLB", "NBA", "歐洲足球"], horizontal=True)
     sport = {"MLB": "mlb", "NBA": "nba", "歐洲足球": "football"}[sport_label]
-    selected = st.date_input("賽事日期（台灣）", _taiwan_day())
+    selected = st.date_input("賽事日（當晚＋隔日凌晨／上午）", _taiwan_day())
+    st.caption(session_label(selected))
     snapshot, label = store.get_member_snapshot(sport, selected.isoformat())
     if not snapshot:
         st.info("這個日期尚未保存賽前分析。管理員建立自動快照後，會員即可直接查看。")
@@ -222,7 +229,8 @@ def _admin_page(store, storage_label: str) -> None:
     st.caption(f"儲存狀態：{storage_label}")
     sport_label = st.radio("管理項目", ["MLB", "NBA", "歐洲足球"], horizontal=True, key="admin_sport")
     sport = {"MLB": "mlb", "NBA": "nba", "歐洲足球": "football"}[sport_label]
-    selected = st.date_input("建立哪一天的賽前快照", _taiwan_day(), key="admin_day")
+    selected = st.date_input("建立哪個賽事日的快照", _taiwan_day(), key="admin_day")
+    st.caption(session_label(selected))
     day = selected.isoformat()
     st.info("後台抓取賽程、球隊資料與盤口／賠率。已開賽的預測鎖定；缺線不當實盤。模型目前未完成樣本外校準，顯示估計機率與 PASS，不宣稱已驗證優勢。")
     if st.button(f"建立並保存 {sport_label} 自動快照", type="primary"):
@@ -244,6 +252,7 @@ def _admin_page(store, storage_label: str) -> None:
             st.error("本次建立未完成；既有快照沒有被覆蓋。請稍後再試或檢查資料來源設定。")
     automatic = store.get_automatic_snapshot(sport, day)
     if automatic:
+        automatic = filter_snapshot_window(automatic)
         with st.expander("資料健康檢查與追蹤"):
             for label,value in snapshot_health(automatic).items():
                 st.write(f"{label}：{value}")
@@ -259,13 +268,13 @@ def _admin_page(store, storage_label: str) -> None:
         if st.button(f"回查 {sport_label} 最終賽果", key=f"settle_{sport}_{day}"):
             try:
                 with st.spinner("正在核對最終賽果…"):
-                    results = fetch_final_results(sport, selected)
+                    results = fetch_session_results(sport, selected)
                     settled_auto, auto_count = settle_snapshot(automatic, results=results)
                     member_snapshot, member_label = store.get_member_snapshot(sport, day)
                     published = None
                     published_count = 0
                     if member_snapshot and member_label in {"人工校正正式推薦", "管理員確認的自動推薦"}:
-                        published, published_count = settle_snapshot(member_snapshot, results=results)
+                        published, published_count = settle_snapshot(filter_snapshot_window(member_snapshot), results=results)
                     if not auto_count and not published_count:
                         st.info("目前沒有已結束且可核對的賽事；快照沒有變更。")
                     else:
