@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from math import isfinite
 from typing import Any, Mapping
 
@@ -32,8 +32,38 @@ from providers import (
     market_for_event,
 )
 from storage import SnapshotStore
-from time_utils import parse_time, pregame, taiwan_day_matches
+from time_utils import parse_time, pregame, session_day_matches, filter_snapshot_window, SESSION_POLICY
 from settlement_math import OUTCOMES, settle, profit, components
+
+
+def fetch_session_events(fetcher, day: date) -> list[Event]:
+    """Providers keep their civil-day contract; combine, filter, then deduplicate.
+
+    A failure in either half aborts publication. Never turn a partial fetch
+    into a complete slate. Provider response caching reuses overlapping calls.
+    """
+    found = {}
+    for source_day in (day, day + timedelta(days=1)):
+        for event in fetcher(source_day):
+            if not session_day_matches(event.kickoff, day):
+                continue
+            old = found.get(event.event_id)
+            if old and (parse_time(old.kickoff), old.home, old.away) != (parse_time(event.kickoff), event.home, event.away):
+                raise ProviderError("同一賽事的時間或主客隊不一致，已停止保存")
+            found[event.event_id] = event
+    return sorted(found.values(), key=lambda event: (parse_time(event.kickoff), event.event_id))
+
+
+def fetch_session_results(sport: str, day: date) -> dict:
+    """Both local calendar days are required for overnight settlement.
+
+    settle_snapshot matches exact saved event IDs; unrelated results cannot
+    introduce new events into a snapshot.
+    """
+    results = {}
+    for source_day in (day, day + timedelta(days=1)):
+        results.update(fetch_final_results(sport, source_day))
+    return results
 
 
 def _upcoming(event: Event) -> bool:
@@ -193,7 +223,7 @@ def _nba_projection(event: Event, team_profiles: dict[int, dict[str, float]]) ->
 
 
 def build_mlb_snapshot(day: date) -> DailySnapshot:
-    events = fetch_mlb_events(day)
+    events = fetch_session_events(fetch_mlb_events, day)
     if not events:
         raise ProviderError("當日沒有可建立的 MLB 賽事；未覆蓋既有快照")
     active = [e for e in events if _upcoming(e)]
@@ -229,7 +259,7 @@ def build_mlb_snapshot(day: date) -> DailySnapshot:
 
 
 def build_nba_snapshot(day: date) -> DailySnapshot:
-    events = fetch_nba_events(day)
+    events = fetch_session_events(fetch_nba_events, day)
     if not events:
         raise ProviderError("當日沒有可建立的 NBA 賽事；未覆蓋既有快照")
     active = [e for e in events if _upcoming(e)]
@@ -263,13 +293,13 @@ def build_nba_snapshot(day: date) -> DailySnapshot:
 
 def build_football_snapshot(day: date) -> DailySnapshot:
     try:
-        events = fetch_football_events(day)
+        events = fetch_session_events(fetch_football_events, day)
         fallback = False
         if not events:
-            events = fetch_espn_football_events(day)
+            events = fetch_session_events(fetch_espn_football_events, day)
             fallback = True
     except ProviderError:
-        events = fetch_espn_football_events(day)
+        events = fetch_session_events(fetch_espn_football_events, day)
         fallback = True
     if not events:
         raise ProviderError("當日沒有可建立的歐洲足球賽事；未覆蓋既有快照")
@@ -419,6 +449,7 @@ def settle_snapshot(snapshot: Mapping[str, Any], *, results: Mapping[str, Mappin
     updated["settlement_summary"] = summary
     updated["settled_at"] = utc_now_iso()
     updated["settlement_version"] = "audit-v3.0"
+    updated.pop("window_summary_needs_refresh", None)
     return updated, settled_events
 
 
@@ -433,12 +464,15 @@ def save_snapshot(store: SnapshotStore, snapshot: DailySnapshot) -> None:
     payload = json.loads(json.dumps(snapshot.as_dict(),ensure_ascii=False,allow_nan=False))
     prior = store.get_automatic_snapshot(snapshot.sport,snapshot.date_key) or {}
     payload["revision_id"] = uuid.uuid4().hex
-    previous = {i["event"]["event_id"]: i for i in prior.get("events",[])}
+    filtered_prior = filter_snapshot_window(prior)
+    previous = {i["event"]["event_id"]: i for i in filtered_prior.get("events",[])}
+    payload["date_policy"] = SESSION_POLICY
+    payload["window_archived_events"] = filtered_prior.get("window_archived_events", [])
     ids = set()
     for index,item in enumerate(payload["events"]):
         event = item["event"]
         event_id = event["event_id"]
-        if event_id in ids or not taiwan_day_matches(event["kickoff"],date.fromisoformat(snapshot.date_key)):
+        if event_id in ids or not session_day_matches(event["kickoff"],date.fromisoformat(snapshot.date_key)):
             raise ProviderError("賽程日期或識別重複，已取消保存以保護既有快照")
         ids.add(event_id)
         old = previous.get(event_id)
@@ -462,6 +496,9 @@ def save_snapshot(store: SnapshotStore, snapshot: DailySnapshot) -> None:
     for event_id,item in previous.items():
         if event_id not in ids:
             payload["events"].append(deepcopy(item))
+    # A locked old event may carry an earlier scheduled kickoff; filter again
+    # after preservation, without deleting the archived original prediction.
+    payload = filter_snapshot_window(payload)
     store.save_automatic(snapshot.sport, snapshot.date_key, payload,expected_revision=prior.get("revision_id"))
 
 
@@ -518,6 +555,7 @@ def apply_manual_calibration(
     therefore be saved without replacing a manual member release.
     """
 
+    automatic_snapshot = filter_snapshot_window(automatic_snapshot)
     sport = str(automatic_snapshot.get("sport", ""))
     if sport not in {"mlb", "nba", "football"}:
         raise ProviderError("人工校正只支援 MLB、NBA 或歐洲足球快照")
@@ -549,8 +587,8 @@ def apply_manual_calibration(
             raise ProviderError("舊版快照缺少可稽核紀錄；請先建立新版賽前快照")
         event_id = str(event["event_id"])
         raw_spread, raw_total = lines_by_event[event_id]
-        spread = _manual_line(raw_spread, f"{event.get('home', '主隊')}讓分")
-        total = _manual_line(raw_total, f"{event.get('away', '客隊')} vs {event.get('home', '主隊')}大小總分")
+        spread = _manual_line(raw_spread, "主隊讓分")
+        total = _manual_line(raw_total, "大小總分")
         components(spread)
         components(total)
         if total <= 0:
@@ -584,5 +622,5 @@ def apply_manual_calibration(
     updated["release_type"] = "manual_calibrated"
     updated.pop("settlement_summary",None)
     updated.pop("settled_at",None)
-    updated["version"] = "audit-v3.0-manual"
+    updated["version"] = "audit-v3.1-manual"
     return updated

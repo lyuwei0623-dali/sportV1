@@ -188,7 +188,7 @@ class AuditStorage(unittest.TestCase):
             store=LocalSnapshotStore(str(Path(root)/"db"))
             e=event();p=score_projection(2,1,"test")
             a=EventAnalysis(e,p,None,probability_recommendations(p,None,sport="football"))
-            day=datetime.fromisoformat(FUTURE).astimezone(TAIPEI).date().isoformat()
+            day=(datetime.fromisoformat(FUTURE).astimezone(TAIPEI)-timedelta(hours=12)).date().isoformat()
             snap=DailySnapshot("football",day,NOW.isoformat(),(a,),())
             save_snapshot(store,snap);save_snapshot(store,snap)
             stored=store.get_automatic_snapshot("football",day)
