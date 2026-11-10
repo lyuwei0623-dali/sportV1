@@ -220,6 +220,10 @@ def _member_page(store) -> None:
 def _admin_page(store, storage_label: str) -> None:
     _brand()
     st.caption(f"儲存狀態：{storage_label}")
+    if hasattr(store, "check_read_access"):
+        # No provider calls or snapshot writes before this zero-row read probe.
+        store.check_read_access()
+        st.caption("資料庫唯讀端點檢查通過；不代表寫入權限或既有快照可見性已驗證。")
     sport_label = st.radio("管理項目", ["MLB", "NBA", "歐洲足球"], horizontal=True, key="admin_sport")
     sport = {"MLB": "mlb", "NBA": "nba", "歐洲足球": "football"}[sport_label]
     selected = st.date_input("建立哪一天的賽前快照", _taiwan_day(), key="admin_day")
@@ -307,8 +311,14 @@ def main() -> None:
         else:
             _member_page(store)
     except StorageError as exc:
-        record("storage",error=exc)
-        st.error(str(exc))
+        report = record("storage",error=exc)
+        st.session_state["last_diagnostic"] = report
+        st.error("資料庫操作未完成：" + str(exc))
+        st.caption(f"診斷分類：{report['code']}｜追蹤碼：{report['id']}｜{VERSION}")
+        if role == "admin":
+            safe_text = "\n".join(f"{k}: {v}" for k,v in report.items())
+            st.download_button("下載安全診斷摘要", safe_text, file_name="vidali-diagnostic.txt", mime="text/plain", key="storage_error_report")
+            st.link_button("錯誤回報／修正進度", "https://github.com/lyuwei0623-dali/sportV1/issues/2")
         st.caption("為保護已保存內容，APP 不會自動改用可能在重新部署後遺失的暫存資料庫。")
     except Exception as exc:
         report = record("render",error=exc)
@@ -320,3 +330,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

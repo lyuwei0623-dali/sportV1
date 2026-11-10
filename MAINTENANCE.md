@@ -39,6 +39,14 @@
 
 ## 本機驗證與回復
 
+### 資料庫失敗診斷
+
+公開健康報告的 app 探測不檢查 Supabase。管理頁使用目前伺服器設定執行 `limit=0` 的唯讀資料表查詢，在抓取賽程／付費盤口前檢查端點與欄位；不讀取快照內容、不插入測試資料。通過只代表該次唯讀端點查詢成功，不能證明寫入權限、RLS資料可見性或資料完整性。
+
+資料庫操作失敗時顯示追蹤碼；管理員可下載安全摘要。分類只包含白名單代碼，不包含金鑰、URL、HTTP回應本文或原始例外。`STORAGE_CONFIG` 核對專案API根網址與伺服器金鑰設定；`STORAGE_AUTH`／`STORAGE_ACCESS` 核對驗證／存取設定；`STORAGE_SCHEMA` 核對端點及資料表；`STORAGE_HTTP` 請管理員核對端點與結構（不憑HTTP碼斷言特定欄位不存在）；網路、逾時、限流、服務失敗分開記錄。不得為排錯放寬權限或公開憑證。失敗不自動重送寫入、不改用SQLite。
+
+這些診斷改善不表示已修復正式環境失聯；需部署後的安全分類／追蹤碼及專案狀態才能定位，正式部署仍須獨立核准。
+
 ```sh
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
@@ -46,3 +54,4 @@ python health_check.py
 ```
 
 健康檢查不帶任何金鑰、不寫資料庫。若新版需回退，用新的revert commit還原程式，不刪Supabase資料、不force push。
+
