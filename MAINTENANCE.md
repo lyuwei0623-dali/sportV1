@@ -35,7 +35,11 @@
 
 ## 密碼與登入
 
-密碼僅讀 Streamlit Secrets 的 APP_ADMIN_PASSWORD / APP_MEMBER_PASSWORD；不得放入GitHub（含明碼、可猜的固定雜湊）。由使用者在平台設定親自修改與儲存。變更Secrets後重新載入會使舊登入session失效；五次錯誤嘗試有session級冷卻，但不是跨session限流。正式公開會員服務仍建議改成獨立帳號與平台級驗證。
+管理員密碼仍只讀 Streamlit Secrets 的 APP_ADMIN_PASSWORD，本功能不修改管理員憑證。會員改用獨立會員編號＋系統隨機密碼，不再接受 APP_MEMBER_PASSWORD。部署前必須先核准並安裝 `migrations/001_members.sql`，詳見 `MEMBERSHIP.md`；缺少會員資料庫時拒絕會員存取，不回退共用密碼或SQLite。
+
+會員密碼只以加鹽scrypt雜湊儲存；裝置隨機token留在瀏覽器，資料庫僅存SHA256摘要。這是單一瀏覽器綁定，不能防止使用者刻意複製token或遠端共用裝置。管理員可新增、續期、停用、重設密碼、解除綁定及刪除會員。有效性以資料庫時間判定，每次會員操作及活躍頁面約30秒重驗；背景分頁／斷線可能延後畫面刷新，已傳送內容不能遠端收回。資料庫無法驗證時不提供新會員內容。
+
+會員帳號五次錯誤嘗試會鎖定五分鐘（資料庫持久化）；管理員仍為原有session級限制，不能宣稱平台級防濫用或防DDoS。管理資料不得放入GitHub、公開診斷或分析報告。新的會員資料表與函式僅授權既有service_role，對anon/authenticated撤銷存取；不改賽事表權限或其他既有角色。正式安裝必須另行核准。
 
 ## 本機驗證與回復
 
@@ -46,3 +50,4 @@ python health_check.py
 ```
 
 健康檢查不帶任何金鑰、不寫資料庫。若新版需回退，用新的revert commit還原程式，不刪Supabase資料、不force push。
+

@@ -21,12 +21,14 @@ from storage import StorageError, create_store
 from ui import render_snapshot
 from auth import verify_password, credential_version
 from diagnostics import record, snapshot_health, VERSION
+from membership import MemberError, MemberRepository
+from membership_ui import login as membership_login, member_management, require_active_member
 
 
 APP_NAME = "維大力體育"
 TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 SECRET_NAMES = (
-    "APP_ADMIN_PASSWORD", "APP_MEMBER_PASSWORD", "SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY",
+    "APP_ADMIN_PASSWORD", "SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY",
     "API_FOOTBALL_KEY", "API_FOOTBALL_INCLUDE_INJURIES", "THE_ODDS_API_KEY", "ODDS_API_KEY", "ODDS_REGIONS", "REQUIRE_SUPABASE",
 )
 
@@ -59,36 +61,7 @@ def _brand() -> None:
 
 
 def _login() -> str:
-    admin_password = os.environ.get("APP_ADMIN_PASSWORD", "")
-    member_password = os.environ.get("APP_MEMBER_PASSWORD", "")
-    if not admin_password or not member_password:
-        _brand()
-        st.error("APP 尚未完成登入設定；請管理員在 Streamlit Secrets 設定 APP_ADMIN_PASSWORD 與 APP_MEMBER_PASSWORD。")
-        st.stop()
-    version = credential_version(admin_password,member_password)
-    if st.session_state.get("credential_version") != version:
-        st.session_state.pop("role",None)
-    if "role" in st.session_state:
-        return st.session_state["role"]
-    _brand()
-    login_type = st.radio("登入身分", ["會員", "管理員"], horizontal=True)
-    password = st.text_input("登入密碼", type="password")
-    if st.button("登入", type="primary"):
-        if time.time() < st.session_state.get("login_retry_after",0):
-            st.error("嘗試次數過多，請稍候一分鐘再試。")
-            st.stop()
-        expected = admin_password if login_type == "管理員" else member_password
-        if verify_password(password, expected):
-            st.session_state["role"] = "admin" if login_type == "管理員" else "member"
-            st.session_state["credential_version"] = version
-            st.session_state["login_failures"] = 0
-            st.rerun()
-        failures = st.session_state.get("login_failures",0)+1
-        st.session_state["login_failures"] = failures
-        if failures>=5:
-            st.session_state["login_retry_after"] = time.time()+60
-        st.error("密碼不正確")
-    st.stop()
+    return membership_login(st, _brand)
 
 
 def _taiwan_day():
@@ -292,6 +265,12 @@ def _admin_page(store, storage_label: str) -> None:
     st.link_button("錯誤回報／修正進度", "https://github.com/lyuwei0623-dali/sportV1/issues")
 
 
+@st.fragment(run_every="30s")
+def _guarded_member_page(store):
+    require_active_member(st, MemberRepository(store))
+    _member_page(store)
+
+
 def main() -> None:
     st.set_page_config(page_title=APP_NAME, page_icon="⚾", layout="wide")
     _load_secrets()
@@ -299,14 +278,16 @@ def main() -> None:
     try:
         store, storage_label = create_store()
         if role == "admin":
-            page = st.radio("功能", ["管理快照", "會員畫面預覽"], horizontal=True)
+            page = st.radio("功能", ["管理快照", "會員畫面預覽", "會員管理"], horizontal=True)
             if page == "管理快照":
                 _admin_page(store, storage_label)
+            elif page == "會員管理":
+                member_management(st, MemberRepository(store))
             else:
                 _member_page(store)
         else:
-            _member_page(store)
-    except StorageError as exc:
+            _guarded_member_page(store)
+    except (StorageError, MemberError) as exc:
         record("storage",error=exc)
         st.error(str(exc))
         st.caption("為保護已保存內容，APP 不會自動改用可能在重新部署後遺失的暫存資料庫。")
@@ -314,9 +295,15 @@ def main() -> None:
         report = record("render",error=exc)
         st.error(f"頁面暫時無法完成，已保留既有資料。追蹤碼：{report['id']}")
     if st.session_state.get("role") and st.button("登出"):
+        if st.session_state.get("role") == "member":
+            try:
+                MemberRepository(store).logout(st.session_state.get("member_session"))
+            except (MemberError, StorageError):
+                pass  # Local session is cleared even when the database is unavailable.
         st.session_state.clear()
         st.rerun()
 
 
 if __name__ == "__main__":
     main()
+
