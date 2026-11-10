@@ -1,0 +1,38 @@
+<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><body>
+<small id="status">正在準備瀏覽器識別…</small>
+<script>
+(() => {
+  "use strict";
+  const key = "vidali_device_v1";
+  let sent = "";
+  function send(type, extra) {
+    window.parent.postMessage({isStreamlitMessage: true, type, ...extra}, window.location.origin);
+  }
+  function publish() {
+    let value;
+    try {
+      let token = localStorage.getItem(key);
+      if (!/^[0-9a-f]{64}$/.test(token || "")) {
+        token = Array.from(crypto.getRandomValues(new Uint8Array(32)), x => x.toString(16).padStart(2,"0")).join("");
+        localStorage.setItem(key, token);
+      }
+      if (localStorage.getItem(key) !== token) throw new Error("storage");
+      value = {ok: true, token};
+      document.getElementById("status").textContent = "瀏覽器識別已就緒；清除網站資料後需管理員解除綁定。";
+    } catch (_) {
+      value = {ok: false};
+      document.getElementById("status").textContent = "無法保存瀏覽器識別；請允許網站儲存資料，勿使用無痕模式。";
+    }
+    if (JSON.stringify(value) !== sent) {
+      sent = JSON.stringify(value);
+      send("streamlit:setComponentValue", {value, dataType: "json"});
+    }
+    send("streamlit:setFrameHeight", {height: 38});
+  }
+  window.addEventListener("message", e => {
+    if (e.source === window.parent && e.origin === window.location.origin && e.data.type === "streamlit:render") publish();
+  });
+  window.addEventListener("storage", e => {if(e.key === key) publish();});
+  send("streamlit:componentReady", {apiVersion: 1});
+})();
+</script></body></html>

@@ -13,12 +13,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 
 class StorageError(RuntimeError):
-    pass
+    def __init__(self, message, *, code="STORAGE_UNKNOWN"):
+        super().__init__(message)
+        self.code = code
+
+
+STORAGE_CODES = frozenset({"STORAGE_CONFIG", "STORAGE_AUTH", "STORAGE_ACCESS",
+    "STORAGE_SCHEMA", "STORAGE_CONFLICT", "STORAGE_RATE_LIMIT", "STORAGE_UPSTREAM",
+    "STORAGE_TIMEOUT", "STORAGE_NETWORK", "STORAGE_RESPONSE", "STORAGE_HTTP", "STORAGE_UNKNOWN"})
+
+
+def _http_failure(status):
+    # Do not read response bodies, headers, URLs or exception messages.
+    code, message = {
+        401: ("STORAGE_AUTH", "資料庫驗證失敗；請管理員核對專案與伺服器金鑰是否相符。"),
+        403: ("STORAGE_ACCESS", "資料庫存取遭拒；需由管理員核對權限，不會自動放寬權限。"),
+        404: ("STORAGE_SCHEMA", "資料庫端點或資料表未找到；請核對專案網址及資料表設定。"),
+        409: ("STORAGE_CONFLICT", "資料庫寫入衝突；請重新讀取後再試，不會自動重送寫入。"),
+        429: ("STORAGE_RATE_LIMIT", "資料庫請求受到限流；請稍後再試。"),
+    }.get(status, ("STORAGE_UPSTREAM", "資料庫服務暫時失敗；請核對專案狀態後再試。") if status >= 500
+          else ("STORAGE_HTTP", "資料庫請求遭拒；請管理員核對端點與資料表結構。"))
+    return StorageError(message, code=code)
 
 
 _UNSET = object()
@@ -126,6 +146,17 @@ class SupabaseSnapshotStore:
     TABLE = "vd_daily_snapshots"
 
     def __init__(self, url: str, service_key: str) -> None:
+        try:
+            parts = urlsplit(url)
+            valid = (parts.scheme == "https" and bool(parts.hostname)
+                     and parts.hostname != "supabase.com" and not parts.hostname.endswith(".supabase.com")
+                     and not parts.username and not parts.password and not parts.query
+                     and not parts.fragment and parts.path in ("", "/"))
+            _ = parts.port
+        except ValueError:
+            valid = False
+        if not valid or not service_key.strip() or service_key.startswith("sb_publishable_"):
+            raise StorageError("資料庫設定無效；請使用專案 API HTTPS 根網址（不是 dashboard 網址）與伺服器金鑰。", code="STORAGE_CONFIG")
         self.base = url.rstrip("/") + "/rest/v1"
         self.headers = {
             "apikey": service_key,
@@ -147,8 +178,28 @@ class SupabaseSnapshotStore:
             with urlopen(request, timeout=18) as response:
                 content = response.read().decode("utf-8")
                 return json.loads(content) if content else None
-        except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
-            raise StorageError("無法連線至永久資料庫；請檢查 Supabase Secrets 與專案狀態") from exc
+        except HTTPError as exc:
+            raise _http_failure(exc.code) from None
+        except TimeoutError:
+            raise StorageError("資料庫連線逾時；請稍後再試並核對專案狀態。", code="STORAGE_TIMEOUT") from None
+        except URLError as exc:
+            code = "STORAGE_TIMEOUT" if isinstance(exc.reason, TimeoutError) else "STORAGE_NETWORK"
+            raise StorageError("資料庫網路連線未完成；請核對網路與專案狀態。", code=code) from None
+        except OSError:
+            raise StorageError("資料庫網路連線未完成；請核對網路與專案狀態。", code="STORAGE_NETWORK") from None
+        except ValueError:
+            raise StorageError("資料庫回應格式不符預期；請核對 API 端點。", code="STORAGE_RESPONSE") from None
+
+    def check_read_access(self) -> None:
+        """Validate endpoint/schema read access without fetching snapshot contents.
+
+        A successful empty query does NOT prove write permission or RLS visibility.
+        Never insert, update or delete a health-check row.
+        """
+        rows = self._request("GET", f"/{self.TABLE}", params={
+            "select": "sport,date_key,automatic_payload,automatic_at,published_payload,published_at", "limit": "0"})
+        if not isinstance(rows, list) or rows:
+            raise StorageError("資料庫唯讀檢查回應不符預期。", code="STORAGE_RESPONSE")
 
     def _row(self, sport: str, date_key: str) -> dict[str, Any] | None:
         rows = self._request("GET", f"/{self.TABLE}", params={
@@ -221,7 +272,8 @@ def create_store() -> tuple[SnapshotStore, str]:
         or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
     )
     if url and key:
-        return SupabaseSnapshotStore(url, key), "Supabase 永久保存"
+        return SupabaseSnapshotStore(url, key), "Supabase 已設定（連線及寫入尚未驗證）"
     if os.environ.get("REQUIRE_SUPABASE", "1") == "1":
-        raise StorageError("尚未完成 Supabase 設定：請在 Streamlit Secrets 填入 SUPABASE_URL 與 SUPABASE_SECRET_KEY")
+        raise StorageError("尚未完成 Supabase 設定：請在 Streamlit Secrets 填入 SUPABASE_URL 與 SUPABASE_SECRET_KEY", code="STORAGE_CONFIG")
     return LocalSnapshotStore(), "本機測試模式（部署後不保存）"
+

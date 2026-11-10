@@ -25,7 +25,8 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
       - run: python -m unittest discover -s tests -v
-      - run: python -m compileall -q app.py models.py providers.py service.py storage.py forecasting.py ui.py auth.py diagnostics.py health_check.py time_utils.py settlement_math.py
+      - run: node tests/device_component_test.cjs
+      - run: python -m compileall -q app.py models.py providers.py service.py storage.py forecasting.py ui.py auth.py diagnostics.py health_check.py time_utils.py settlement_math.py membership.py membership_ui.py device_binding.py
   public-health:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -61,3 +62,4 @@ jobs:
               await github.rest.issues.create({...context.repo, title,
                 body:`檢查未通過，請查看 Actions 執行紀錄：${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\n此通知不包含密碼、金鑰、會員資料或原始API回應。外部來源逾時不代表模型錯誤；先分類再修正。尚未自動部署任何修補。`});
             }
+
