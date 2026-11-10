@@ -4,8 +4,9 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from time_utils import parse_time
+from storage import StorageError, STORAGE_CODES
 
-VERSION = "audit-v3.0-members1"
+VERSION = "audit-v3.2"
 
 def record(stage, *, sport="", error=None, event_count=None):
     report = {"id":uuid.uuid4().hex[:12], "version":VERSION,
@@ -15,6 +16,8 @@ def record(stage, *, sport="", error=None, event_count=None):
               "status":"failed" if error is not None else "ok"}
     if event_count is not None:
         report["event_count"] = int(event_count)
+    if isinstance(error, StorageError):
+        report["code"] = error.code if error.code in STORAGE_CODES else "STORAGE_UNKNOWN"
     # Never str(error), repr(error) or traceback: upstream exceptions contain URLs/keys.
     logging.getLogger("vidali.audit").warning(json.dumps(report,ensure_ascii=False))
     return report
