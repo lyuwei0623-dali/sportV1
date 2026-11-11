@@ -16,10 +16,11 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 from providers import ProviderError
-from service import apply_manual_calibration, build_football_snapshot, build_mlb_snapshot, build_nba_snapshot, save_snapshot, settle_snapshot, fetch_session_results
+from service import apply_manual_calibration, manual_calibration_base, build_football_snapshot, build_mlb_snapshot, build_nba_snapshot, save_snapshot, settle_snapshot, fetch_session_results
 from storage import StorageError, create_store
 from ui import render_snapshot, display_team, _time
-from time_utils import filter_snapshot_window, session_label
+from time_utils import filter_snapshot_window, session_label, pregame
+from models import utc_now_iso
 from auth import verify_password, credential_version
 from diagnostics import record, snapshot_health, VERSION
 from membership import MemberError, MemberRepository
@@ -92,6 +93,8 @@ def _manual_defaults(snapshot: dict | None) -> dict[str, tuple[float, float]]:
         return {}
     values: dict[str, tuple[float, float]] = {}
     for item in snapshot.get("events", []):
+        if not item.get("manual_calibration"):
+            continue
         event, market = item.get("event", {}), item.get("market", {})
         event_id = event.get("event_id")
         if not event_id or not isinstance(market, dict):
@@ -104,24 +107,33 @@ def _manual_defaults(snapshot: dict | None) -> dict[str, tuple[float, float]]:
 
 
 def _manual_calibration_panel(st, store, automatic: dict, sport: str, day: str, sport_label: str) -> None:
-    """Admin-only form for a complete manual handicap / total recalculation."""
+    """Publish completed rows without blocking on other unavailable games."""
 
     automatic = filter_snapshot_window(automatic)
     if not automatic.get("events"):
         return
     active_snapshot, active_label = store.get_member_snapshot(sport, day)
+    try:
+        automatic = manual_calibration_base(automatic, active_snapshot)
+    except ProviderError as exc:
+        st.error(str(exc))
+        return
     defaults = _manual_defaults(active_snapshot)
     st.divider()
     st.subheader("人工校正盤口並發布")
     st.caption(f"會員目前讀取：{active_label}")
     st.info(
-        "每場都填「主隊讓分」與「大小總分」後，系統才會以這些實際線重新計算讓分／大小過盤率，"
-        "並保存為人工校正正式推薦。主隊讓分填負數，例如 -0.5；主隊受讓填正數，例如 +0.5。"
+        "只儲存已完整填入「主隊讓分」與「大小總分」的場次。空白、只填一欄、缺模型或已開賽的場次會跳過，"
+        "保留原本資料及已發布校正；不是整張賽程都已人工校正。主隊讓分填負數，例如 -0.5；受讓填正數，例如 +0.5。"
     )
     st.caption("獨贏勝率由已保存的球隊／球員模型決定，不需要也不使用賠率或 EV。")
 
     raw_lines: dict[str, tuple[str, str]] = {}
-    missing_model: list[str] = []
+    notice_key = f"manual_notice_{sport}_{day}"
+    notice = st.session_state.pop(notice_key, None)
+    if notice:
+        st.success(notice)
+    when = utc_now_iso()
     with st.form(f"manual_calibration_{sport}_{day}", clear_on_submit=False):
         for index, item in enumerate(automatic.get("events", []), start=1):
             event = item.get("event", {})
@@ -130,15 +142,17 @@ def _manual_calibration_panel(st, store, automatic: dict, sport: str, day: str, 
             st.markdown(f"**{index}. {away}（客） vs {home}（主）**")
             st.caption(f"開賽（台灣）：{_time(event.get('kickoff', ''))}")
             if not event_id or not item.get("projection"):
-                missing_model.append(f"{away} vs {home}")
-                st.error("這場自動快照缺少球隊模型資料；不能只靠人工盤口產生機率。請先重新建立完整自動快照。")
+                st.warning("本場缺少模型資料，保留原資料並跳過；不影響其他場次儲存。")
+                continue
+            if not pregame(event.get("kickoff"), when) or item.get("capture_schema") != 3:
+                st.caption("本場已開賽、時間未確認或缺少新版賽前紀錄，保留原資料，不開放校正。")
                 continue
             market = item.get("market") or {}
             automatic_spread, automatic_total = market.get("spread_line"), market.get("total_line")
             if automatic_spread is not None or automatic_total is not None:
                 spread_text = "—" if automatic_spread is None else f"{float(automatic_spread):+g}"
                 total_text = "—" if automatic_total is None else f"{float(automatic_total):g}"
-                st.caption(f"自動保存線（僅供比對）：主隊讓分 {spread_text}｜大小 {total_text}")
+                st.caption(f"目前保存線（僅供比對）：主隊讓分 {spread_text}｜大小 {total_text}")
             previous = defaults.get(event_id)
             left, right = st.columns(2)
             with left:
@@ -160,17 +174,17 @@ def _manual_calibration_panel(st, store, automatic: dict, sport: str, day: str, 
 
     if not submitted:
         return
-    if missing_model:
-        st.error("以下賽事沒有可用模型資料，請先重新建立自動快照：" + "、".join(missing_model))
-        return
     try:
-        parsed_lines = {
-            event_id: (
-                _parse_manual_line(raw[0], "主隊讓分"),
-                _parse_manual_line(raw[1], "大小總分"),
-            )
-            for event_id, raw in raw_lines.items()
-        }
+        parsed_lines = {}
+        for event_id, raw in raw_lines.items():
+            if not raw[0].strip() or not raw[1].strip():
+                continue
+            pair = (_parse_manual_line(raw[0], "主隊讓分"), _parse_manual_line(raw[1], "大小總分"))
+            if pair != defaults.get(event_id):
+                parsed_lines[event_id] = pair
+        if not parsed_lines:
+            st.info("沒有完整的新校正可儲存：請至少填妥一場兩個盤口，或修改已保存盤口；原資料未更動。")
+            return
         manual_snapshot = apply_manual_calibration(automatic, parsed_lines)
         store.save_manual_published(sport, day, manual_snapshot)
     except ValueError as exc:
@@ -179,7 +193,7 @@ def _manual_calibration_panel(st, store, automatic: dict, sport: str, day: str, 
     except (ProviderError, StorageError) as exc:
         st.error(str(exc))
         return
-    st.success("人工校正盤口已重算並發布。會員現在會優先看到「人工校正正式推薦」。")
+    st.session_state[notice_key] = f"已校正並發布 {len(parsed_lines)} 場；其餘 {len(automatic['events']) - len(parsed_lines)} 場保留原資料。未填完整的盤口尚未保存。"
     st.rerun()
 
 

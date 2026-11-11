@@ -9,6 +9,8 @@ from device_binding import browser_device
 from membership import MemberError, MemberRepository
 from storage import create_store, StorageError
 
+MEMBER_APP_URL = "https://vidali-sports.streamlit.app/"
+
 
 def taipei_time(value):
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Taipei")).strftime("%Y/%m/%d %H:%M") if value else "—"
@@ -125,7 +127,8 @@ def member_management(st, repo):
     credentials = st.session_state.get("issued_credentials")
     if credentials:
         st.warning("請私下交付給該會員。密碼不提供事後查詢；關閉後只能重新產生。勿貼至公開錯誤單。")
-        st.code(f"會員編號：{credentials['login_id']}\n專屬密碼：{credentials['password']}", language=None)
+        st.code(f"APP 網址：{MEMBER_APP_URL}\n會員編號：{credentials['login_id']}\n專屬密碼：{credentials['password']}", language=None)
+        st.caption("所有會員使用同一個 APP 網址；開啟後選擇會員，以各自的編號及密碼登入。網址不含密碼或登入憑證。")
         if credentials.get("expires_at"):
             st.caption("到期時間：" + taipei_time(credentials["expires_at"]))
         if st.button("已交付，關閉密碼顯示"):
