@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from time_utils import parse_time
 from storage import StorageError, STORAGE_CODES
 
-VERSION = "audit-v3.2"
+VERSION = "audit-v3.3"
 
 def record(stage, *, sport="", error=None, event_count=None):
     report = {"id":uuid.uuid4().hex[:12], "version":VERSION,

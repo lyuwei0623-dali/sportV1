@@ -200,6 +200,9 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
         st.info("這個賽事日範圍內沒有已保存賽事，請管理員重新建立快照；不代表來源沒有比賽。")
         return
     st.warning("目前為未校準模型分析，不是已驗證的下注推薦。機率高不等於值得下注；請勿將模型百分比當成實測準確率。")
+    if snapshot.get("release_type") == "manual_calibrated":
+        calibrated = sum(bool(item.get("manual_calibration")) for item in events)
+        st.caption(f"人工校正涵蓋 {calibrated}／{len(events)} 場；其餘保留原資料，不代表全部場次皆已校正。")
     stamp = parse_time(snapshot.get("generated_at"))
     st.caption(f"快照時間（台灣）：{_time(snapshot.get('generated_at',''))}｜版本：{snapshot.get('version','舊版')}｜盤口不是即時畫面")
     if stamp is None or (datetime.now(timezone.utc)-stamp).total_seconds()>1800:
@@ -248,6 +251,8 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
             html.append(f'<tr class="league-row"><td colspan="10">{escape(str(current_league))}</td></tr>')
         matchup = f"{escape(display_team(str(event.get('away', '客隊'))))}（客）<br>vs<br>{escape(display_team(str(event.get('home', '主隊'))))}（主）"
         warnings = "<br>".join(escape(str(entry)) for entry in item.get("warnings", [])) or "—"
+        if snapshot.get("release_type") == "manual_calibrated":
+            warnings = ("已人工校正" if item.get("manual_calibration") else "未人工校正・保留原資料") + "<br>" + warnings
         market = item.get("market") or {}
         if market:
             warnings += f"<br>盤源：{escape(str(market.get('bookmaker','未提供')))}<br>盤口時間：{_time(market.get('updated_at',''))}"

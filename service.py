@@ -539,6 +539,27 @@ def _manual_line(value: Any, label: str) -> float:
     return line
 
 
+def manual_calibration_base(automatic_snapshot, published_snapshot=None):
+    """Keep the active manual release intact while adding new automatic games."""
+    base = filter_snapshot_window(automatic_snapshot)
+    if not published_snapshot or published_snapshot.get("release_type") != "manual_calibrated":
+        return base
+    if any(base.get(key) != published_snapshot.get(key) for key in ("sport", "date_key")):
+        raise ProviderError("人工發布版與自動快照的運動或日期不一致，已停止校正")
+    published = filter_snapshot_window(published_snapshot)
+    # Start with the published payload to retain archived records and provenance.
+    result = deepcopy(published)
+    previous = {str(item['event']['event_id']): item for item in result.get('events', [])}
+    for item in base.get('events', []):
+        event = item['event']
+        old = previous.get(str(event['event_id']))
+        if old is None:
+            result['events'].append(deepcopy(item))
+        elif any(old['event'].get(k) != event.get(k) for k in ('home', 'away')) or parse_time(old['event'].get('kickoff')) != parse_time(event.get('kickoff')):
+            raise ProviderError("已發布賽事的主客隊或開賽時間已改變，請先核對賽事資料")
+    return result
+
+
 def apply_manual_calibration(
     automatic_snapshot: Mapping[str, Any],
     lines_by_event: Mapping[str, tuple[float, float]],
@@ -548,8 +569,8 @@ def apply_manual_calibration(
     """Create a separately published, manually calibrated snapshot.
 
     ``lines_by_event`` contains the home team's handicap then the game total.
-    Every event must be calibrated.  This prevents a partly corrected slate
-    from being presented as a complete "人工校正正式推薦" release.
+    Only submitted events are calibrated; all other entries remain unchanged.
+    The UI must disclose coverage instead of claiming the whole slate is manual.
 
     The automatic snapshot is never mutated.  A later automatic refresh can
     therefore be saved without replacing a manual member release.
@@ -570,22 +591,26 @@ def apply_manual_calibration(
         event = item.get("event")
         if not isinstance(event, Mapping) or not event.get("event_id"):
             raise ProviderError("已保存快照缺少賽事識別，請重新建立自動快照")
-        if not isinstance(item.get("projection"), Mapping):
-            raise ProviderError("有賽事缺少球隊模型資料，不能靠人工盤口產生推薦")
         expected_ids.append(str(event["event_id"]))
-    if set(lines_by_event) != set(expected_ids):
-        raise ProviderError("每一場都必須填入主隊讓分與大小總分後才能發布人工校正版本")
+    if not lines_by_event:
+        raise ProviderError("請至少完整填入一場主隊讓分與大小總分；沒有資料被更動")
+    if not set(lines_by_event).issubset(expected_ids):
+        raise ProviderError("人工校正包含不屬於本賽事日的場次，已停止發布")
 
     when = calibrated_at or utc_now_iso()
     updated = deepcopy(dict(automatic_snapshot))
     updated_events = updated["events"]
     for item in updated_events:
         event = item["event"]
+        event_id = str(event["event_id"])
+        if event_id not in lines_by_event:
+            continue
+        if not isinstance(item.get("projection"), Mapping):
+            raise ProviderError("選定賽事缺少球隊模型資料，不能靠人工盤口產生推薦")
         if not pregame(event.get("kickoff"),when):
             raise ProviderError("已開賽或缺少開賽時間，不能修改賽前盤口")
         if item.get("capture_schema") != 3:
             raise ProviderError("舊版快照缺少可稽核紀錄；請先建立新版賽前快照")
-        event_id = str(event["event_id"])
         raw_spread, raw_total = lines_by_event[event_id]
         spread = _manual_line(raw_spread, "主隊讓分")
         total = _manual_line(raw_total, "大小總分")
@@ -604,7 +629,7 @@ def apply_manual_calibration(
         ]
         warnings = [
             str(warning) for warning in item.get("warnings", ())
-            if "缺少的讓分／大小線" not in str(warning)
+            if "缺少的讓分／大小線" not in str(warning) and not str(warning).startswith("人工校正盤口：")
         ]
         warnings.append(f"人工校正盤口：主隊讓分 {spread:+g}｜大小 {total:g}")
         item["warnings"] = warnings
@@ -622,6 +647,6 @@ def apply_manual_calibration(
     updated["release_type"] = "manual_calibrated"
     updated.pop("settlement_summary",None)
     updated.pop("settled_at",None)
-    updated["version"] = "audit-v3.1-manual"
+    updated["version"] = "audit-v3.3-manual"
     return updated
 
