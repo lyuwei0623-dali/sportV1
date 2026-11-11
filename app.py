@@ -208,7 +208,7 @@ def _member_page(store) -> None:
         st.info("這個日期尚未保存賽前分析。管理員建立自動快照後，會員即可直接查看。")
         return
     st.caption(f"目前顯示：{label}｜會員頁面只讀取已保存內容，不抓取即時盤口、不重算模型。")
-    render_snapshot(st, snapshot, label)
+    render_snapshot(st, snapshot, label, member_view=True)
 
 
 def _admin_page(store, storage_label: str) -> None:
