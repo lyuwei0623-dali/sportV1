@@ -166,6 +166,29 @@ def _recommendation(value: dict[str, Any], settlement: dict[str, Any] | None = N
     )
 
 
+def _member_recommendation(value: dict[str, Any], settlement: dict[str, Any] | None = None) -> str:
+    """Compact display only: saved decisions and probabilities remain untouched."""
+    state = str(value.get("state", "unavailable"))
+    probability = value.get("model_probability")
+    if state not in {"model", "market_line", "model_reference"} or probability is None:
+        return '<div class="pick compact unavailable">資料不足</div>'
+    metric = "勝率" if value.get("market_type") == "moneyline" else "過盤機率"
+    reference = '<small>模型參考線（非實盤）</small><br>' if state == "model_reference" else ""
+    outcome = (settlement or {}).get("outcome")
+    outcome_label = {"won": "✓ 全贏", "half_won": "✓ 半贏", "lost": "✕ 全輸",
+                     "half_lost": "✕ 半輸", "push": "— 走盤"}.get(outcome, "")
+    if outcome_label and not (settlement or {}).get("evaluation_eligible", False):
+        outcome_label += "（不計績效）"
+    css_outcome = {"half_won": "won", "half_lost": "lost"}.get(outcome, outcome)
+    outcome_class = f" settled-{css_outcome}" if css_outcome in {"won", "lost", "push"} else ""
+    return (
+        f'<div class="pick compact {state}{outcome_class}">{reference}'
+        f'<b>{escape(str(value.get("selection", "資料不足")))}</b>'
+        f'<br><span class="compact-probability">{_pct(probability)}</span><br><small>{metric}</small>'
+        f'{f"<br><b>{outcome_label}</b>" if outcome_label else ""}</div>'
+    )
+
+
 def _style() -> str:
     return """
     <style>
@@ -177,11 +200,12 @@ def _style() -> str:
     .snapshot tr:nth-child(even){background:#fbfdff}.snapshot .league-row td{text-align:left;background:#173f64;color:#fff;font-weight:700;padding:8px 10px}
     .pick {border-radius:7px;padding:7px;min-width:138px}.pick small{color:#40566d}.pick.model,.pick.market_line{background:#eaf3ff;color:#174d7d}.pick.model_reference{background:#f4f1ff;color:#59408a}.pick.unavailable{background:#f1f5f9;color:#64748b}.pick.settled-won{background:#dcfce7!important;color:#166534!important;border:1px solid #86efac}.pick.settled-lost{background:#fee2e2!important;color:#991b1b!important;border:1px solid #fca5a5}.pick.settled-push{background:#fef3c7!important;color:#92400e!important;border:1px solid #fcd34d}.settlement-summary{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 14px}.settlement-stat{background:#f1f5f9;border-radius:8px;padding:7px 10px;color:#334155;font-size:13px}
     .warning {color:#795313;font-size:12px;max-width:230px}.member-note{color:#52677d;font-size:13px;margin:6px 0 13px}
+    .snapshot.member-table {min-width:900px}.pick.compact {min-width:105px;padding:10px 8px}.compact-probability {font-size:22px;font-weight:750;line-height:1.6}.calibration-tag {font-size:11px;color:#52677d}
     </style>
     """
 
 
-def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> None:
+def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str, *, member_view: bool = False) -> None:
     snapshot = filter_snapshot_window(snapshot)
     try:
         st.caption(session_label(date.fromisoformat(str(snapshot.get("date_key", "")))))
@@ -199,7 +223,10 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
     if not events:
         st.info("這個賽事日範圍內沒有已保存賽事，請管理員重新建立快照；不代表來源沒有比賽。")
         return
-    st.warning("目前為未校準模型分析，不是已驗證的下注推薦。機率高不等於值得下注；請勿將模型百分比當成實測準確率。")
+    if member_view:
+        st.caption("機率為模型估計，尚未完成樣本外驗證；人工校正僅確認盤口，不代表保證命中或獲利。")
+    else:
+        st.warning("目前為未校準模型分析，不是已驗證的下注推薦。機率高不等於值得下注；請勿將模型百分比當成實測準確率。")
     if snapshot.get("release_type") == "manual_calibrated":
         calibrated = sum(bool(item.get("manual_calibration")) for item in events)
         st.caption(f"人工校正涵蓋 {calibrated}／{len(events)} 場；其餘保留原資料，不代表全部場次皆已校正。")
@@ -218,7 +245,11 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
     else:
         title = "MLB｜當日賽事分析"
         headers = ["開賽（台灣）", "對戰／先發", "模型預估得分", "賽果機率", "最終比分", "勝率最高", "讓分過盤率", "大小過盤率", "模型資料／風險"]
-    html = [_style(), f'<div class="snapshot-title">{escape(title)}｜{escape(release_label)}</div>', '<div class="snapshot-wrap"><table class="snapshot"><thead><tr>']
+    card = _member_recommendation if member_view else _recommendation
+    if member_view:
+        headers = headers[:-1]
+    table_class = "snapshot member-table" if member_view else "snapshot"
+    html = [_style(), f'<div class="snapshot-title">{escape(title)}｜{escape(release_label)}</div>', f'<div class="snapshot-wrap"><table class="{table_class}"><thead><tr>']
     html.extend(f"<th>{escape(header)}</th>" for header in headers)
     html.append("</tr></thead><tbody>")
     summary = snapshot.get("settlement_summary") or {} if snapshot.get("settlement_version")=="audit-v3.0" else {}
@@ -248,7 +279,7 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
                        if settled.get("status") == "final" else "尚未結束")
         if sport == "football" and event.get("league") != current_league:
             current_league = event.get("league")
-            html.append(f'<tr class="league-row"><td colspan="10">{escape(str(current_league))}</td></tr>')
+            html.append(f'<tr class="league-row"><td colspan="{len(headers)}">{escape(str(current_league))}</td></tr>')
         matchup = f"{escape(display_team(str(event.get('away', '客隊'))))}（客）<br>vs<br>{escape(display_team(str(event.get('home', '主隊'))))}（主）"
         warnings = "<br>".join(escape(str(entry)) for entry in item.get("warnings", [])) or "—"
         if snapshot.get("release_type") == "manual_calibrated":
@@ -268,28 +299,38 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str) -> No
                 outcome = f"主 {_pct(projection.get('home_win'))}<br>和 {_pct(projection.get('draw'))}<br>客 {_pct(projection.get('away_win'))}"
                 score = f"{escape(str(projection.get('score','—')))}<br><small>命中機率 {_pct(projection.get('score_probability'))}</small>"
                 cells = [_time(event.get("kickoff", "")), matchup, expected, score, outcome,
-                         final_score, _recommendation(recs.get("moneyline", {}), pick_results.get("moneyline")), _recommendation(recs.get("spread", {}), pick_results.get("spread")),
-                         _recommendation(recs.get("total", {}), pick_results.get("total")), f'<span class="warning">{warnings}</span>']
+                         final_score, card(recs.get("moneyline", {}), pick_results.get("moneyline")), card(recs.get("spread", {}), pick_results.get("spread")),
+                         card(recs.get("total", {}), pick_results.get("total")), f'<span class="warning">{warnings}</span>']
             else:
                 outcome = f"主勝 {_pct(projection.get('home_win'))}<br>客勝 {_pct(projection.get('away_win'))}"
                 if sport == "mlb":
                     pitchers = event.get("metadata", {})
                     matchup += f"<br><small>客投：{escape(str(pitchers.get('away_pitcher','尚未確認')))}<br>主投：{escape(str(pitchers.get('home_pitcher','尚未確認')))}</small>"
                 cells = [_time(event.get("kickoff", "")), matchup, expected, outcome,
-                         final_score, _recommendation(recs.get("moneyline", {}), pick_results.get("moneyline")), _recommendation(recs.get("spread", {}), pick_results.get("spread")),
-                         _recommendation(recs.get("total", {}), pick_results.get("total")), f'<span class="warning">{warnings}</span>']
+                         final_score, card(recs.get("moneyline", {}), pick_results.get("moneyline")), card(recs.get("spread", {}), pick_results.get("spread")),
+                         card(recs.get("total", {}), pick_results.get("total")), f'<span class="warning">{warnings}</span>']
         else:
-            unavailable = _recommendation(recs.get("moneyline", {}))
+            unavailable = card(recs.get("moneyline", {}))
             if sport == "football":
                 cells = [_time(event.get("kickoff", "")), matchup, "—", "—", "—", final_score, unavailable,
-                         _recommendation(recs.get("spread", {}), pick_results.get("spread")), _recommendation(recs.get("total", {}), pick_results.get("total")),
+                         card(recs.get("spread", {}), pick_results.get("spread")), card(recs.get("total", {}), pick_results.get("total")),
                          f'<span class="warning">{warnings}</span>']
             else:
                 cells = [_time(event.get("kickoff", "")), matchup, "—", "—", final_score, unavailable,
-                         _recommendation(recs.get("spread", {}), pick_results.get("spread")), _recommendation(recs.get("total", {}), pick_results.get("total")),
+                         card(recs.get("spread", {}), pick_results.get("spread")), card(recs.get("total", {}), pick_results.get("total")),
                          f'<span class="warning">{warnings}</span>']
+        if member_view:
+            cells = cells[:-1]
+            if snapshot.get("release_type") == "manual_calibrated":
+                status = "已人工校正" if item.get("manual_calibration") else "未人工校正"
+                cells[1] += f'<br><span class="calibration-tag">{status}</span>'
         html.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
     html.append("</tbody></table></div>")
-    st.caption("機率使用可取得的球隊統計；球員／傷停／輪換未完整建模。足球結算為90分鐘含補時，不含延長及PK。半贏與半輸分開列；模型參考盤及無賽前時間證據者不計績效。")
     st.markdown("".join(html), unsafe_allow_html=True)
+    explanation = "機率使用可取得的球隊統計；球員／傷停／輪換未完整建模。足球結算為90分鐘含補時，不含延長及PK。半贏與半輸分開列；模型參考盤及無賽前時間證據者不計績效。"
+    if member_view:
+        with st.expander("機率與結算說明"):
+            st.caption(explanation)
+    else:
+        st.caption(explanation)
 
