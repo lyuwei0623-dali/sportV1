@@ -26,7 +26,7 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: python -m unittest discover -s tests -v
       - run: node tests/device_component_test.cjs
-      - run: python -m compileall -q app.py models.py providers.py service.py storage.py forecasting.py ui.py auth.py diagnostics.py health_check.py time_utils.py settlement_math.py membership.py membership_ui.py device_binding.py
+      - run: python -m compileall -q app.py models.py providers.py service.py storage.py forecasting.py ui.py auth.py diagnostics.py health_check.py time_utils.py settlement_math.py membership.py membership_ui.py device_binding.py daily_snapshots.py
   public-health:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

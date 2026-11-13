@@ -27,6 +27,7 @@ class AppSmoke(unittest.TestCase):
                 at.radio[0].set_value("會員").run();at.text_input[0].set_value("VD-000000000001");at.text_input[1].set_value("test-member-only");at.button[0].click().run()
                 self.assertEqual(len(at.exception),0)
                 self.assertEqual(at.session_state["role"],"member")
+                self.assertTrue(any("每日台灣時間中午 12:00" in c.value for c in at.caption))
                 self.assertFalse(any("建立並保存" in b.label for b in at.button))
                 members.validate.return_value=None
                 at.run()
