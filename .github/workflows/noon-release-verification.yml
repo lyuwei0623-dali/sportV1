@@ -45,6 +45,20 @@ jobs:
           from storage import create_store, SupabaseSnapshotStore, StorageError, STORAGE_CODES
           report = {'sport': os.environ['SPORT'], 'write_verified': False}
           try:
+              url = os.environ.get('SUPABASE_URL', '')
+              key = os.environ.get('SUPABASE_SECRET_KEY', '') or os.environ.get('SUPABASE_SERVICE_ROLE_KEY', '')
+              report['config_checks'] = {
+                  'url_present': bool(url),
+                  'url_has_outer_whitespace': url != url.strip(),
+                  'url_contains_quote': any(c in url for c in ('"', "'")),
+                  'url_contains_assignment': 'SUPABASE_URL=' in url.replace(' ', ''),
+                  'url_is_https': url.startswith('https://'),
+                  'url_expected_project': urlsplit(url).hostname == 'xgbqgvjycmxwcmgxubni.supabase.co',
+                  'server_key_present': bool(key),
+                  'server_key_has_outer_whitespace': key != key.strip(),
+                  'server_key_contains_quote': any(c in key for c in ('"', "'")),
+                  'server_key_is_publishable': key.startswith('sb_publishable_'),
+              }
               day = current_session_day(datetime.now(timezone.utc))
               if day.isoformat() != '2026-11-13':
                   raise RuntimeError('One-day authorization expired')
