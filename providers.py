@@ -56,6 +56,10 @@ class ProviderError(RuntimeError):
     pass
 
 
+class NoEventsError(ProviderError):
+    """A successful schedule lookup returned no events in the session."""
+
+
 _RESPONSE_CACHE = {}
 _CACHE_LOCK = Lock()
 

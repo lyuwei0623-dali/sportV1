@@ -1,0 +1,39 @@
+name: Daily noon member snapshots
+on:
+  schedule:
+    # UTC 04:00 = Asia/Taipei 12:00. GitHub may delay scheduled jobs.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        sport: [mlb, nba, football]
+    concurrency:
+      group: daily-snapshots-${{ matrix.sport }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Core builders/storage use the standard library; no Streamlit install.
+      # These are Actions secrets, not the separate Streamlit Secrets store.
+      - name: Save member-visible snapshot without replacing manual release
+        env:
+          REQUIRE_SUPABASE: '1'
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+        run: python daily_snapshots.py --sport ${{ matrix.sport }}

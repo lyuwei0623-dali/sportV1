@@ -199,13 +199,15 @@ def _manual_calibration_panel(st, store, automatic: dict, sport: str, day: str, 
 
 def _member_page(store) -> None:
     _brand()
+    st.caption("每日台灣時間中午 12:00 開始更新賽事，儲存完成後即可查詢；人工校正版優先顯示。")
+    st.caption("排程或資料來源可能延遲，請以所選快照的實際建立時間為準。")
     sport_label = st.radio("賽事類別", ["MLB", "NBA", "歐洲足球"], horizontal=True)
     sport = {"MLB": "mlb", "NBA": "nba", "歐洲足球": "football"}[sport_label]
     selected = st.date_input("賽事日（當晚＋隔日凌晨／上午）", _taiwan_day())
     st.caption(session_label(selected))
     snapshot, label = store.get_member_snapshot(sport, selected.isoformat())
     if not snapshot:
-        st.info("這個日期尚未保存賽前分析。管理員建立自動快照後，會員即可直接查看。")
+        st.info("這個日期尚未保存賽前分析。每日排程或管理員完成快照後即可查看；尚無快照不代表當日沒有賽事。")
         return
     st.caption(f"目前顯示：{label}｜會員頁面只讀取已保存內容，不抓取即時盤口、不重算模型。")
     render_snapshot(st, snapshot, label, member_view=True)

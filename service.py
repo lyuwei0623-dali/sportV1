@@ -16,6 +16,7 @@ from models import DailySnapshot, Event, EventAnalysis, Market, Projection, Reco
 from providers import (
     FOOTBALL_LEAGUES,
     ProviderError,
+    NoEventsError,
     fetch_football_events,
     fetch_football_injury_counts,
     fetch_football_standings,
@@ -31,7 +32,7 @@ from providers import (
     fetch_final_results,
     market_for_event,
 )
-from storage import SnapshotStore
+from storage import SnapshotStore, StorageError
 from time_utils import parse_time, pregame, session_day_matches, filter_snapshot_window, SESSION_POLICY
 from settlement_math import OUTCOMES, settle, profit, components
 
@@ -225,7 +226,7 @@ def _nba_projection(event: Event, team_profiles: dict[int, dict[str, float]]) ->
 def build_mlb_snapshot(day: date) -> DailySnapshot:
     events = fetch_session_events(fetch_mlb_events, day)
     if not events:
-        raise ProviderError("當日沒有可建立的 MLB 賽事；未覆蓋既有快照")
+        raise NoEventsError("當日沒有可建立的 MLB 賽事；未覆蓋既有快照")
     active = [e for e in events if _upcoming(e)]
     team_profiles = fetch_mlb_team_profiles(active, day) if active else {}
     pitcher_profiles = fetch_mlb_pitcher_profiles(active, day) if active else {}
@@ -261,7 +262,7 @@ def build_mlb_snapshot(day: date) -> DailySnapshot:
 def build_nba_snapshot(day: date) -> DailySnapshot:
     events = fetch_session_events(fetch_nba_events, day)
     if not events:
-        raise ProviderError("當日沒有可建立的 NBA 賽事；未覆蓋既有快照")
+        raise NoEventsError("當日沒有可建立的 NBA 賽事；未覆蓋既有快照")
     active = [e for e in events if _upcoming(e)]
     team_profiles = fetch_nba_team_profiles(active, day) if active else {}
     notes = ["ESPN NBA 賽程、球隊得失分與賽季勝率"]
@@ -302,7 +303,7 @@ def build_football_snapshot(day: date) -> DailySnapshot:
         events = fetch_session_events(fetch_espn_football_events, day)
         fallback = True
     if not events:
-        raise ProviderError("當日沒有可建立的歐洲足球賽事；未覆蓋既有快照")
+        raise NoEventsError("當日沒有可建立的歐洲足球賽事；未覆蓋既有快照")
     active = [e for e in events if _upcoming(e)]
     if not active:
         return DailySnapshot("football",day.isoformat(),utc_now_iso(),tuple(_schedule_only(e) for e in events),("僅顯示賽程，未建立事後預測",))
@@ -453,7 +454,7 @@ def settle_snapshot(snapshot: Mapping[str, Any], *, results: Mapping[str, Mappin
     return updated, settled_events
 
 
-def save_snapshot(store: SnapshotStore, snapshot: DailySnapshot) -> None:
+def save_snapshot(store: SnapshotStore, snapshot: DailySnapshot, *, only_if_absent: bool = False) -> None:
     """Save only after an entire non-empty slate has been assembled."""
 
     if not snapshot.events:
@@ -463,6 +464,8 @@ def save_snapshot(store: SnapshotStore, snapshot: DailySnapshot) -> None:
     import uuid
     payload = json.loads(json.dumps(snapshot.as_dict(),ensure_ascii=False,allow_nan=False))
     prior = store.get_automatic_snapshot(snapshot.sport,snapshot.date_key) or {}
+    if only_if_absent and prior:
+        raise StorageError("當日快照已存在；排程不覆蓋既有內容", code="STORAGE_CONFLICT")
     payload["revision_id"] = uuid.uuid4().hex
     filtered_prior = filter_snapshot_window(prior)
     previous = {i["event"]["event_id"]: i for i in filtered_prior.get("events",[])}
