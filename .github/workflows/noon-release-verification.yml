@@ -1,0 +1,94 @@
+name: Authorized noon release verification 20261113
+on:
+  push:
+    branches: [verify/noon-release-20261113]
+    paths: [.github/workflows/noon-release-verification.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/verify/noon-release-20261113'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        sport: [mlb, nba, football]
+    concurrency:
+      group: daily-snapshots-${{ matrix.sport }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 9e98d18a7f6a02af76d9ddbc0073ac13adc00e27
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Authorized real-source fetch, append-only save and readback
+        env:
+          SPORT: ${{ matrix.sport }}
+          REQUIRE_SUPABASE: '1'
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from urllib.parse import urlsplit
+          from daily_snapshots import BUILDERS, current_session_day, run_one
+          from providers import NoEventsError, ProviderError
+          from storage import create_store, SupabaseSnapshotStore, StorageError, STORAGE_CODES
+          report = {'sport': os.environ['SPORT'], 'write_verified': False}
+          try:
+              day = current_session_day(datetime.now(timezone.utc))
+              if day.isoformat() != '2026-11-13':
+                  raise RuntimeError('One-day authorization expired')
+              if urlsplit(os.environ.get('SUPABASE_URL', '')).hostname != 'xgbqgvjycmxwcmgxubni.supabase.co':
+                  raise StorageError('Wrong project', code='STORAGE_CONFIG')
+              store, _ = create_store()
+              if not isinstance(store, SupabaseSnapshotStore):
+                  raise StorageError('Durable store required', code='STORAGE_CONFIG')
+              store.check_read_access()
+              sport = report['sport']
+              before = store._row(sport, day.isoformat())
+              report.update(date_key=day.isoformat(), database_read='ok')
+              try:
+                  snapshot = BUILDERS[sport](day)
+              except NoEventsError:
+                  report.update(status='no_events', fetched_events=0)
+              else:
+                  report.update(fetched_events=len(snapshot.events),
+                      fetched_models=sum(i.projection is not None for i in snapshot.events),
+                      fetched_market_lines=sum(i.market is not None and (i.market.spread_line is not None or i.market.total_line is not None) for i in snapshot.events))
+                  report.update(run_one(store, sport, day, builder=lambda _: snapshot))
+              after = store._row(sport, day.isoformat())
+              if (before or {}).get('published_payload') != (after or {}).get('published_payload'):
+                  raise RuntimeError('Published release changed during verification')
+              if (before or {}).get('automatic_payload') is not None and before != after:
+                  raise RuntimeError('Existing row changed during verification')
+              report['existing_data_preserved'] = True
+              member, _ = store.get_member_snapshot(sport, day.isoformat())
+              if report['status'] == 'saved':
+                  saved = (after or {}).get('automatic_payload') or {}
+                  if saved.get('generated_at') != snapshot.generated_at or saved.get('date_key') != day.isoformat() or len(saved.get('events', [])) != len(snapshot.events):
+                      raise RuntimeError('Readback mismatch')
+                  if member != saved:
+                      raise RuntimeError('Member read path mismatch')
+                  report['write_verified'] = True
+                  report['member_read_path'] = 'ok'
+              elif report['status'] == 'existing_preserved':
+                  report['member_read_path'] = 'ok' if member is not None else 'failed'
+          except StorageError as exc:
+              report.update(status='failed', code=exc.code if exc.code in STORAGE_CODES else 'STORAGE_UNKNOWN')
+          except ProviderError:
+              report.update(status='failed', code='PROVIDER_UNAVAILABLE')
+          except Exception:
+              report.update(status='failed', code='VERIFICATION_FAILED')
+          print(json.dumps(report))
+          raise SystemExit(1 if report['status'] == 'failed' else 0)
+          PY
