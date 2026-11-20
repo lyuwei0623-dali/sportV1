@@ -233,7 +233,7 @@ def _admin_page(store, storage_label: str) -> None:
                 snapshot = builders[sport](selected)
                 save_snapshot(store, snapshot)
                 st.session_state["last_diagnostic"] = record("snapshot",sport=sport,event_count=len(snapshot.events))
-            st.success(f"已保存 {len(snapshot.events)} 場 {sport_label} 賽事。自動快照現在已可供會員查詢。")
+            st.success(f"已保存 {len(snapshot.events)} 場 {sport_label} 自動快照。若已有人工發布版，會員仍優先讀取人工版；下方預覽顯示會員目前讀取內容。")
         except ProviderError as exc:
             st.session_state["last_diagnostic"] = record("snapshot",sport=sport,error=exc)
             st.error(str(exc))
@@ -251,8 +251,18 @@ def _admin_page(store, storage_label: str) -> None:
                 st.write(f"{label}：{value}")
             st.caption("會員仍讀保存的快照；不是背景即時更新。新增版本保留首筆及最近29次紀錄，已開賽預測不覆蓋。")
         st.divider()
-        st.subheader("已保存快照預覽")
-        render_snapshot(st, automatic, "自動快照（會員可查詢）")
+        st.subheader("會員目前讀取的快照（後台詳版）")
+        # Manual calibration is stored separately. Preview the same release
+        # members read, not the intentionally unchanged automatic baseline.
+        active_snapshot, active_label = store.get_member_snapshot(sport, day)
+        if active_snapshot:
+            render_snapshot(st, active_snapshot, active_label)
+        else:
+            st.info("目前沒有會員可讀取的快照，請重新整理確認；不以自動版冒充已發布內容。")
+        if active_snapshot and active_snapshot.get("release_type") == "manual_calibrated":
+            st.caption("人工校正已另存發布；原始自動版保留作比對，不會被覆寫。未校正場次仍可能顯示模型基準線。")
+            if st.checkbox("查看原始自動快照（比對用，不是目前會員版）", key=f"baseline_{sport}_{day}"):
+                render_snapshot(st, automatic, "原始自動快照（比對用，非目前會員版）")
         st.caption("不做人工校正時，自動快照已可直接提供會員查詢；之後建立新的自動快照也不會覆蓋已發布的人工校正版。")
         _manual_calibration_panel(st, store, automatic, sport, day, sport_label)
         st.divider()
