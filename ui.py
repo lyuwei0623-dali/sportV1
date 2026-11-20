@@ -230,6 +230,7 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str, *, me
     if snapshot.get("release_type") == "manual_calibrated":
         calibrated = sum(bool(item.get("manual_calibration")) for item in events)
         st.caption(f"人工校正涵蓋 {calibrated}／{len(events)} 場；其餘保留原資料，不代表全部場次皆已校正。")
+        st.caption(f"最近人工校正發布（台灣）：{_time(snapshot.get('manual_calibrated_at', ''))}")
     stamp = parse_time(snapshot.get("generated_at"))
     st.caption(f"快照時間（台灣）：{_time(snapshot.get('generated_at',''))}｜版本：{snapshot.get('version','舊版')}｜盤口不是即時畫面")
     if stamp is None or (datetime.now(timezone.utc)-stamp).total_seconds()>1800:
