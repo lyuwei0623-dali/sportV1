@@ -31,7 +31,7 @@ def automatic(sport):
                   score_projection(1.8, .8, 'test inputs'))
     item = {
         'event': {'event_id': 'one', 'home': 'Arsenal', 'away': 'Chelsea',
-                  'kickoff': '2030-10-19T12:00:00Z'},
+                  'kickoff': '2030-10-19T20:00:00Z'},
         'capture_schema': 3, 'captured_at': NOW,
         'projection': asdict(projection), 'market': None,
         'recommendations': [asdict(r) for r in probability_recommendations(projection, None, sport=sport)],
@@ -137,10 +137,11 @@ class AdminPublishedPreviewTests(unittest.TestCase):
 
     def test_finished_reference_cannot_be_relabelled_as_manual(self):
         original = automatic('nba')
-        original['events'][0]['event']['kickoff'] = '2030-10-19T04:30:00Z'
+        original['events'][0]['event']['kickoff'] = '2030-10-19T16:30:00Z'
         original['events'][0]['settlement'] = {'status': 'final', 'home_score': 116, 'away_score': 94}
         self.store.save_automatic('nba', DAY, original)
-        app = self.open('nba')
+        with patch('app.utc_now_iso', return_value='2030-10-19T17:00:00Z'):
+            app = self.open('nba')
         self.assertFalse(app.text_input)
         self.assertIn('模型基準線', tables(app)[0])
         self.assertEqual(self.store.get_automatic_snapshot('nba', DAY), original)

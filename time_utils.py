@@ -4,7 +4,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 TAIPEI = ZoneInfo("Asia/Taipei")
-SESSION_POLICY = "taipei-noon-to-noon-v1"
+SESSION_POLICY = "taipei-next-calendar-day-v2"
 
 def parse_time(value):
     try:
@@ -18,8 +18,8 @@ def taiwan_day_matches(value, day):
     return stamp is not None and stamp.astimezone(TAIPEI).date() == day
 
 def session_window(day):
-    """One non-overlapping sports slate: local noon to next noon, end excluded."""
-    start = datetime.combine(day, time(12), tzinfo=TAIPEI)
+    """Selecting D queries D+1 in Taipei, midnight inclusive to midnight exclusive."""
+    start = datetime.combine(day + timedelta(days=1), time.min, tzinfo=TAIPEI)
     return start, start + timedelta(days=1)
 
 def session_day_matches(value, day):
@@ -29,7 +29,7 @@ def session_day_matches(value, day):
 
 def session_label(day):
     start, end = session_window(day)
-    return f"台灣時間 {start:%Y/%m/%d %H:%M} ～ {end:%Y/%m/%d %H:%M} 前（當晚＋隔日凌晨／上午）"
+    return f"查詢日 {day:%Y/%m/%d}｜台灣賽事時間 {start:%Y/%m/%d} 00:00～23:59（至 {end:%Y/%m/%d} 00:00 前）"
 
 def filter_snapshot_window(snapshot):
     """Read-only projection and safe migration of legacy mixed-date payloads.
@@ -43,7 +43,15 @@ def filter_snapshot_window(snapshot):
     except ValueError:
         day = None
     kept, removed, seen = [], [], set()
-    for item in result.get("events", []):
+    active = list(result.get("events", []))
+    candidates = list(active)
+    archived = list(result.get("window_archived_events", []))
+    restore_archive = result.get("date_policy") != SESSION_POLICY and bool(archived)
+    if restore_archive:
+        # Old noon-window archives may contain the next evening, now in range.
+        # Active records win duplicates; no prediction is recomputed.
+        candidates.extend(archived)
+    for item in candidates:
         event = item.get("event", {})
         event_id = event.get("event_id")
         if (day is not None and event_id and event_id not in seen
@@ -53,8 +61,9 @@ def filter_snapshot_window(snapshot):
         else:
             removed.append(item)
     result["events"] = sorted(kept, key=lambda item: parse_time(item["event"]["kickoff"]))
-    if removed:
-        result["window_archived_events"] = [*result.get("window_archived_events", []), *removed]
+    if removed or restore_archive:
+        result["window_archived_events"] = removed if restore_archive else [*archived, *removed]
+    if kept != active:
         # The old aggregate includes excluded games; never present it as this slate's accuracy.
         result.pop("settlement_summary", None)
         result["window_summary_needs_refresh"] = True

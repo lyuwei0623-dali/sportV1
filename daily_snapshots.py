@@ -15,7 +15,7 @@ BUILDERS = {"mlb": build_mlb_snapshot, "nba": build_nba_snapshot,
 
 
 def current_session_day(now: datetime):
-    """A delayed run after midnight still targets the preceding noon's slate."""
+    """Noon publication key; delayed overnight runs still query that key's next day."""
     if now.tzinfo is None:
         raise ValueError("Timezone required")
     return (now.astimezone(TAIPEI) - timedelta(hours=12)).date()

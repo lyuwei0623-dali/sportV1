@@ -1,5 +1,6 @@
-"""Regression: selected evening plus next morning, not two full calendar days."""
+"""Regression: selecting D queries the next full Taipei civil day only."""
 from copy import deepcopy
+from contextlib import ExitStack
 from dataclasses import asdict, replace
 from datetime import date, timedelta
 from pathlib import Path
@@ -29,12 +30,12 @@ def event(key, time, sport="nba"):
 def slate(sport="nba"):
     return [event(key, time, sport) for key, time in [
         ("previous-morning", "2026-10-25T08:00:00+08:00"),
-        ("start", "2026-10-25T12:00:00+08:00"),
-        ("evening", "2026-10-25T20:00:00+08:00"),
+        ("start", "2026-10-26T00:00:00+08:00"),
+        ("evening", "2026-10-26T20:00:00+08:00"),
         ("overnight", "2026-10-25T18:00:00Z"),
-        ("last", "2026-10-26T11:59:59+08:00"),
-        ("end", "2026-10-26T12:00:00+08:00"),
-        ("next-evening", "2026-10-26T20:00:00+08:00"),
+        ("last", "2026-10-26T23:59:59.999999+08:00"),
+        ("end", "2026-10-27T00:00:00+08:00"),
+        ("next-evening", "2026-10-27T20:00:00+08:00"),
     ]]
 
 
@@ -45,7 +46,35 @@ def payload(rows=None):
 
 
 class SessionWindowTests(unittest.TestCase):
-    def test_noon_boundaries_utc_and_naive_values(self):
+    def test_requested_november_example_and_utc_conversion(self):
+        start, end = session_window(date(2026, 11, 20))
+        self.assertEqual(start.isoformat(), "2026-11-21T00:00:00+08:00")
+        self.assertEqual(end.isoformat(), "2026-11-22T00:00:00+08:00")
+        self.assertEqual(parse_time(start).isoformat(), "2026-11-20T16:00:00+00:00")
+        self.assertTrue(session_day_matches("2026-11-21T15:59:59Z", date(2026, 11, 20)))
+        self.assertFalse(session_day_matches("2026-11-21T16:00:00Z", date(2026, 11, 20)))
+
+    def test_old_archive_restores_evening_and_preserves_recalculated_summary(self):
+        original = payload([slate()[3]])
+        archived_evening = payload([slate()[2]])["events"][0]
+        archived_evening["prediction_history"] = [{"marker": "original-pregame"}]
+        duplicate = deepcopy(original["events"][0])
+        duplicate["projection"] = {"marker": "must-not-replace-active"}
+        original["window_archived_events"] = [archived_evening, duplicate, payload([slate()[0]])["events"][0]]
+        original["date_policy"] = "taipei-noon-v1"
+        original["settlement_summary"] = {"stale": True}
+        before = deepcopy(original)
+        view = filter_snapshot_window(original)
+        self.assertEqual(original, before)
+        self.assertEqual(view["events"], [original["events"][0], archived_evening])
+        self.assertEqual(len(view["window_archived_events"]), 2)
+        self.assertNotIn("settlement_summary", view)
+        self.assertEqual(view["date_policy"], "taipei-noon-v1")
+        settled, _ = settle_snapshot(view, results={})
+        self.assertIn("settlement_summary", settled)
+        self.assertEqual(filter_snapshot_window(settled), settled)
+
+    def test_next_midnight_boundaries_utc_and_naive_values(self):
         self.assertEqual([e.event_id for e in slate() if session_day_matches(e.kickoff, DAY)],
                          ["start", "evening", "overnight", "last"])
         for invalid in ("2026-10-26T02:00:00", "", None, "invalid"):
@@ -59,18 +88,18 @@ class SessionWindowTests(unittest.TestCase):
             self.assertFalse(session_day_matches(end.isoformat(), day))
             self.assertTrue(session_day_matches(end.isoformat(), day+timedelta(days=1)))
 
-    def test_fetch_two_civil_dates_filters_sorts_and_deduplicates(self):
+    def test_fetch_next_civil_date_filters_sorts_and_deduplicates(self):
         fetch = Mock(return_value=list(reversed(slate())) + [slate()[3]])
         rows = fetch_session_events(fetch, DAY)
-        self.assertEqual([e.event_id for e in rows], ["start", "evening", "overnight", "last"])
-        self.assertEqual([c.args[0] for c in fetch.call_args_list], [DAY, DAY+timedelta(days=1)])
+        self.assertEqual([e.event_id for e in rows], ["start", "overnight", "evening", "last"])
+        self.assertEqual([c.args[0] for c in fetch.call_args_list], [DAY+timedelta(days=1)])
 
     def test_conflicting_identity_and_partial_fetch_are_not_published(self):
         first = slate()[2]
         with self.assertRaises(ProviderError):
-            fetch_session_events(Mock(side_effect=[[first], [replace(first, home="Other")]]), DAY)
+            fetch_session_events(Mock(return_value=[first, replace(first, home="Other")]), DAY)
         with self.assertRaises(ProviderError):
-            fetch_session_events(Mock(side_effect=[[first], ProviderError("unavailable")]), DAY)
+            fetch_session_events(Mock(side_effect=ProviderError("unavailable")), DAY)
 
     def test_all_builders_use_identical_window(self):
         for sport, builder, target in (("nba", build_nba_snapshot, "fetch_nba_events"),
@@ -78,11 +107,32 @@ class SessionWindowTests(unittest.TestCase):
                                        ("football", build_football_snapshot, "fetch_football_events")):
             with self.subTest(sport=sport), patch("service."+target, return_value=slate(sport)), patch("service._upcoming", return_value=False):
                 snapshot = builder(DAY)
-                self.assertEqual([i.event.event_id for i in snapshot.events], ["start", "evening", "overnight", "last"])
+                self.assertEqual([i.event.event_id for i in snapshot.events], ["start", "overnight", "evening", "last"])
+
+    def test_profile_seasons_use_target_day_at_year_boundary(self):
+        day, target = date(2030, 12, 31), date(2031, 1, 1)
+        for sport, builder, targets in (
+                ('nba', build_nba_snapshot, ['fetch_nba_team_profiles']),
+                ('mlb', build_mlb_snapshot, ['fetch_mlb_team_profiles', 'fetch_mlb_pitcher_profiles']),
+                ('football', build_football_snapshot, ['fetch_football_standings'])):
+            row = Event('test', sport, '2031-01-01T04:00:00+08:00', 'Home', 'Away', '英超' if sport == 'football' else sport.upper())
+            with self.subTest(sport=sport), ExitStack() as stack:
+                stack.enter_context(patch('service.fetch_session_events', return_value=[row]))
+                stack.enter_context(patch('service._upcoming', return_value=True))
+                stack.enter_context(patch('service.fetch_odds', return_value=[]))
+                stack.enter_context(patch('service.fetch_football_team_profiles', return_value={}))
+                stack.enter_context(patch('service.fetch_football_injury_counts', return_value={}))
+                sources = [stack.enter_context(patch('service.' + name, return_value={})) for name in targets]
+                builder(day)
+                for source in sources:
+                    self.assertEqual(source.call_args.args[-1], target)
+        with patch('service.fetch_football_events', side_effect=ProviderError('test')), patch('service.fetch_espn_football_events', return_value=[row]), patch('service._upcoming', return_value=True), patch('service.fetch_odds', return_value=[]), patch('service.fetch_espn_football_standings', return_value={}) as standings:
+            build_football_snapshot(day)
+            standings.assert_called_once_with(target)
 
     def test_football_fallback_uses_same_window(self):
         with patch("service.fetch_football_events", side_effect=ProviderError("unavailable")), patch("service.fetch_espn_football_events", return_value=slate("football")), patch("service._upcoming", return_value=False):
-            self.assertEqual([i.event.event_id for i in build_football_snapshot(DAY).events], ["start", "evening", "overnight", "last"])
+            self.assertEqual([i.event.event_id for i in build_football_snapshot(DAY).events], ["start", "overnight", "evening", "last"])
 
     def test_read_filter_preserves_original_archives_and_hides_stale_aggregate(self):
         original = payload()
@@ -91,7 +141,7 @@ class SessionWindowTests(unittest.TestCase):
         unchanged = deepcopy(original)
         view = filter_snapshot_window(original)
         self.assertEqual(original, unchanged)
-        self.assertEqual([i["event"]["event_id"] for i in view["events"]], ["start", "evening", "overnight", "last"])
+        self.assertEqual([i["event"]["event_id"] for i in view["events"]], ["start", "overnight", "evening", "last"])
         self.assertEqual(len(view["window_archived_events"]), 4)
         self.assertNotIn("settlement_summary", view)
         self.assertTrue(view["window_summary_needs_refresh"])
@@ -115,7 +165,7 @@ class SessionWindowTests(unittest.TestCase):
                                      (EventAnalysis(new_event, None, None, ()),), ())
             save_snapshot(store, snapshot)
             saved = store.get_automatic_snapshot("nba", DAY.isoformat())
-            self.assertEqual([i["event"]["event_id"] for i in saved["events"]], ["evening", "overnight"])
+            self.assertEqual([i["event"]["event_id"] for i in saved["events"]], ["overnight", "evening"])
             self.assertEqual(len(saved["window_archived_events"]), 2)
             self.assertEqual(saved["date_policy"], SESSION_POLICY)
             save_snapshot(store, snapshot)
@@ -136,9 +186,9 @@ class SessionWindowTests(unittest.TestCase):
 
     def test_result_lookup_includes_next_morning_and_settles_only_selected_ids(self):
         final = {"status": "final", "home_score": 110, "away_score": 100}
-        with patch("service.fetch_final_results", side_effect=[{"evening": final}, {"overnight": final, "next-evening": final}]) as get:
+        with patch("service.fetch_final_results", return_value={"evening": final, "overnight": final, "next-evening": final}) as get:
             results = fetch_session_results("nba", DAY)
-        self.assertEqual([c.args[1] for c in get.call_args_list], [DAY, DAY+timedelta(days=1)])
+        self.assertEqual([c.args[1] for c in get.call_args_list], [DAY+timedelta(days=1)])
         updated, count = settle_snapshot(filter_snapshot_window(payload()), results=results)
         self.assertEqual(count, 2)
         self.assertNotIn("next-evening", [i["event"]["event_id"] for i in updated["events"]])
@@ -192,7 +242,7 @@ class SessionUiTests(unittest.TestCase):
                     at.date_input[0].set_value(future_day).run()
                     self.assertEqual(len(at.exception), 0)
                     self.assertEqual([i.label for i in at.text_input], [chinese+" 主隊讓分", "大小總分"])
-                    self.assertTrue(any("2030/10/26 12:00" in c.value for c in at.caption))
+                    self.assertTrue(any("2030/10/26 00:00～23:59" in c.value for c in at.caption))
                     headings = [m.value for m in at.markdown if m.value.startswith("**1.")]
                     self.assertEqual(len(headings), 1)
                     self.assertIn(chinese, headings[0])
@@ -204,7 +254,7 @@ class SessionUiTests(unittest.TestCase):
                     table = "".join(m.value for m in at.markdown)
                     self.assertIn("10/26 02:00", table)
                     self.assertNotIn("10/25 08:00", table)
-                    self.assertNotIn("10/26 20:00", table)
+                    self.assertNotIn("10/27 20:00", table)
                     self.assertEqual(store.get_automatic_snapshot(sport, future_day.isoformat()), stored_before)
 
 

@@ -22,7 +22,7 @@ def snapshot():
     events = []
     for key in ('one', 'missing', 'two'):
         events.append({'event': {'event_id': key, 'home': 'Arsenal', 'away': 'Chelsea',
-                                 'kickoff': '2030-10-19T12:00:00Z'},
+                                 'kickoff': '2030-10-19T20:00:00Z'},
                        'capture_schema': 3,
                        'projection': None if key == 'missing' else asdict(score_projection(1.8, .8, 'test')),
                        'market': None, 'recommendations': [], 'warnings': []})
@@ -31,6 +31,32 @@ def snapshot():
 
 
 class PartialManualUITests(unittest.TestCase):
+    def test_split_lines_publish_canonical_values_and_reload(self):
+        original = snapshot()
+        store = MagicMock()
+        saved = []
+        store.get_automatic_snapshot.return_value = original
+        store.get_member_snapshot.side_effect = lambda *args: (saved[-1] if saved else original, '測試')
+        store.save_manual_published.side_effect = lambda sport, day, payload: saved.append(deepcopy(payload))
+        with patch('storage.create_store', return_value=(store, 'test')):
+            at = AppTest.from_string(SCRIPT).run()
+            at.text_input[0].set_value('-0/0.5')
+            at.text_input[1].set_value('2/2.5')
+            at.button[0].click().run()
+            self.assertEqual(len(at.exception), 0)
+            self.assertEqual(len(saved), 1)
+            market = saved[0]['events'][0]['market']
+            self.assertEqual((market['spread_line'], market['total_line']), (-.25, 2.25))
+            self.assertEqual(saved[0]['events'][1:], original['events'][1:])
+            reopened = AppTest.from_string(SCRIPT).run()
+            self.assertEqual(len(reopened.exception), 0)
+            self.assertEqual(float(reopened.text_input[0].value), -.25)
+            self.assertEqual(float(reopened.text_input[1].value), 2.25)
+            reopened.text_input[0].set_value('0/1')
+            reopened.button[0].click().run()
+            self.assertTrue(reopened.error)
+            self.assertEqual(len(saved), 1)
+
     def test_missing_model_and_half_filled_game_do_not_block_complete_game(self):
         original = snapshot()
         store = MagicMock()
@@ -82,11 +108,11 @@ class PartialManualUITests(unittest.TestCase):
 
     def test_started_game_has_no_inputs_and_does_not_block_upcoming_game(self):
         original = snapshot()
-        original['events'][0]['event']['kickoff'] = '2030-10-19T04:30:00Z'
+        original['events'][0]['event']['kickoff'] = '2030-10-19T16:30:00Z'
         store = MagicMock()
         store.get_automatic_snapshot.return_value = original
         store.get_member_snapshot.return_value = (original, 'test')
-        with patch('storage.create_store', return_value=(store, 'test')), patch('app.utc_now_iso', return_value='2030-10-19T05:00:00Z'), patch('service.utc_now_iso', return_value='2030-10-19T05:00:00Z'):
+        with patch('storage.create_store', return_value=(store, 'test')), patch('app.utc_now_iso', return_value='2030-10-19T17:00:00Z'), patch('service.utc_now_iso', return_value='2030-10-19T17:00:00Z'):
             at = AppTest.from_string(SCRIPT).run()
             self.assertEqual(len(at.text_input), 2)
             at.text_input[0].set_value('-.5')
