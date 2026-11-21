@@ -21,7 +21,7 @@ class ManualCalibrationTest(unittest.TestCase):
             "date_key": "2026-10-19",
             "generated_at": "2026-10-19T00:00:00+00:00",
             "events": [{
-                "event": {"event_id": "football:one", "home": "Home", "away": "Away", "kickoff":"2026-10-19T12:00:00Z"},
+                "event": {"event_id": "football:one", "home": "Home", "away": "Away", "kickoff":"2026-10-19T20:00:00Z"},
                 "capture_schema":3,
                 "projection": asdict(projection),
                 "market": None,
@@ -68,25 +68,25 @@ class ManualCalibrationTest(unittest.TestCase):
     def test_unselected_started_game_is_preserved(self):
         original = self._snapshot()
         started = deepcopy(original['events'][0])
-        started['event'].update(event_id='football:started', kickoff='2026-10-19T04:30:00Z')
+        started['event'].update(event_id='football:started', kickoff='2026-10-19T16:30:00Z')
         started['settlement'] = {'status': 'final', 'home_score': 2, 'away_score': 1}
         original['events'].append(started)
         result = apply_manual_calibration(original, {'football:one': (-.5, 2.5)},
-                                          calibrated_at='2026-10-19T05:00:00Z')
+                                          calibrated_at='2026-10-19T17:00:00Z')
         self.assertEqual(next(i for i in result['events'] if i['event']['event_id'] == 'football:started'), started)
 
     def test_selected_started_or_missing_model_still_rejected(self):
         for change in ('started', 'missing', 'legacy'):
             original = self._snapshot()
             if change == 'started':
-                original['events'][0]['event']['kickoff'] = '2026-10-19T04:30:00Z'
+                original['events'][0]['event']['kickoff'] = '2026-10-19T16:30:00Z'
             elif change == 'missing':
                 original['events'][0]['projection'] = None
             else:
                 original['events'][0]['capture_schema'] = 1
             with self.subTest(change=change), self.assertRaises(ProviderError):
                 apply_manual_calibration(original, {'football:one': (-.5, 2.5)},
-                                         calibrated_at='2026-10-19T05:00:00Z')
+                                         calibrated_at='2026-10-19T17:00:00Z')
 
     def test_repeat_partial_release_retains_prior_manual_game_and_adds_new_game(self):
         original = self._snapshot()

@@ -213,7 +213,7 @@ def render_snapshot(st: Any, snapshot: dict[str, Any], release_label: str, *, me
         st.error("快照缺少有效賽事日期，已停止顯示；請重新建立快照。")
         return
     if snapshot.get("date_policy") != SESSION_POLICY:
-        st.info("這份舊快照已依新賽事日範圍篩選，但未補抓隔日賽程。管理員請重新建立此賽事日的自動快照；人工發布版需重新校正發布。")
+        st.info("這份舊快照已按「查詢日的隔日全天」篩選，但尚未補齊新範圍賽程。管理員可重新建立自動快照；人工版仍優先，需再次校正發布。已開賽預測保留，不事後補造。")
     if snapshot.get("window_archived_events"):
         st.caption(f"已隱藏 {len(snapshot['window_archived_events'])} 筆範圍外／重複舊紀錄；原始內容保留於封存，不列入本次賽事。")
     if snapshot.get("window_summary_needs_refresh"):

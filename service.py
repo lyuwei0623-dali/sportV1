@@ -34,17 +34,13 @@ from providers import (
 )
 from storage import SnapshotStore, StorageError
 from time_utils import parse_time, pregame, session_day_matches, filter_snapshot_window, SESSION_POLICY
-from settlement_math import OUTCOMES, settle, profit, components
+from settlement_math import OUTCOMES, settle, profit, components, parse_manual_line
 
 
 def fetch_session_events(fetcher, day: date) -> list[Event]:
-    """Providers keep their civil-day contract; combine, filter, then deduplicate.
-
-    A failure in either half aborts publication. Never turn a partial fetch
-    into a complete slate. Provider response caching reuses overlapping calls.
-    """
+    """Fetch the next Taipei civil day, then validate, filter and deduplicate."""
     found = {}
-    for source_day in (day, day + timedelta(days=1)):
+    for source_day in (day + timedelta(days=1),):
         for event in fetcher(source_day):
             if not session_day_matches(event.kickoff, day):
                 continue
@@ -56,13 +52,13 @@ def fetch_session_events(fetcher, day: date) -> list[Event]:
 
 
 def fetch_session_results(sport: str, day: date) -> dict:
-    """Both local calendar days are required for overnight settlement.
+    """Query the same next Taipei civil day used by schedule lookup.
 
     settle_snapshot matches exact saved event IDs; unrelated results cannot
     introduce new events into a snapshot.
     """
     results = {}
-    for source_day in (day, day + timedelta(days=1)):
+    for source_day in (day + timedelta(days=1),):
         results.update(fetch_final_results(sport, source_day))
     return results
 
@@ -228,8 +224,8 @@ def build_mlb_snapshot(day: date) -> DailySnapshot:
     if not events:
         raise NoEventsError("當日沒有可建立的 MLB 賽事；未覆蓋既有快照")
     active = [e for e in events if _upcoming(e)]
-    team_profiles = fetch_mlb_team_profiles(active, day) if active else {}
-    pitcher_profiles = fetch_mlb_pitcher_profiles(active, day) if active else {}
+    team_profiles = fetch_mlb_team_profiles(active, day + timedelta(days=1)) if active else {}
+    pitcher_profiles = fetch_mlb_pitcher_profiles(active, day + timedelta(days=1)) if active else {}
     notes = ["MLB Stats API 賽程、球隊打擊／投球、預定先發"]
     try:
         odds = fetch_odds("baseball_mlb") if active else []
@@ -264,7 +260,7 @@ def build_nba_snapshot(day: date) -> DailySnapshot:
     if not events:
         raise NoEventsError("當日沒有可建立的 NBA 賽事；未覆蓋既有快照")
     active = [e for e in events if _upcoming(e)]
-    team_profiles = fetch_nba_team_profiles(active, day) if active else {}
+    team_profiles = fetch_nba_team_profiles(active, day + timedelta(days=1)) if active else {}
     notes = ["ESPN NBA 賽程、球隊得失分與賽季勝率"]
     try:
         odds = fetch_odds("basketball_nba", regions="us") if active else []
@@ -310,7 +306,7 @@ def build_football_snapshot(day: date) -> DailySnapshot:
     if fallback:
         notes = ["ESPN 公開賽程與聯賽積分（API-Football 暫不可用）"]
         try:
-            standings = fetch_espn_football_standings(day)
+            standings = fetch_espn_football_standings(day + timedelta(days=1))
         except ProviderError:
             standings = {}
         team_profiles, injuries = {}, {}
@@ -318,7 +314,7 @@ def build_football_snapshot(day: date) -> DailySnapshot:
     else:
         notes = ["API-Football 賽程"]
         try:
-            standings = fetch_football_standings(day)
+            standings = fetch_football_standings(day + timedelta(days=1))
             team_profiles = fetch_football_team_profiles(active)
             notes.append("API-Football 團隊主客場攻守資料")
         except ProviderError:
@@ -530,11 +526,11 @@ def _projection_from_saved_payload(payload: Mapping[str, Any]) -> Projection:
         raise ProviderError("已保存快照缺少可用模型資料，不能用人工盤口製造機率") from exc
 
 
-def _manual_line(value: Any, label: str) -> float:
+def _manual_line(value: Any, label: str, *, allow_split=False) -> float:
     """Validate a numeric line before it can be labelled as an actual line."""
 
     try:
-        line = float(value)
+        line = parse_manual_line(value, label, allow_split=allow_split)
     except (TypeError, ValueError) as exc:
         raise ProviderError(f"{label}必須是數字") from exc
     if not isfinite(line):
@@ -615,8 +611,8 @@ def apply_manual_calibration(
         if item.get("capture_schema") != 3:
             raise ProviderError("舊版快照缺少可稽核紀錄；請先建立新版賽前快照")
         raw_spread, raw_total = lines_by_event[event_id]
-        spread = _manual_line(raw_spread, "主隊讓分")
-        total = _manual_line(raw_total, "大小總分")
+        spread = _manual_line(raw_spread, "主隊讓分", allow_split=sport == "football")
+        total = _manual_line(raw_total, "大小總分", allow_split=sport == "football")
         components(spread)
         components(total)
         if total <= 0:

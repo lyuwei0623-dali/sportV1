@@ -12,6 +12,7 @@ from models import DailySnapshot, Event, EventAnalysis
 from providers import NoEventsError, ProviderError
 from service import apply_manual_calibration, save_snapshot, build_mlb_snapshot, build_nba_snapshot, build_football_snapshot
 from storage import LocalSnapshotStore, StorageError, SupabaseSnapshotStore
+from time_utils import session_window
 
 
 class DailySnapshotTests(unittest.TestCase):
@@ -21,7 +22,7 @@ class DailySnapshotTests(unittest.TestCase):
         self.store = LocalSnapshotStore(str(Path(self.tmp.name) / 'test.sqlite'))
         self.day = date(2030, 11, 13)
         projection = basketball_projection(115, 110, 'test inputs')
-        event = Event('nba:test', 'nba', '2030-11-13T12:00:00Z', 'Home', 'Away', 'NBA')
+        event = Event('nba:test', 'nba', '2030-11-13T20:00:00Z', 'Home', 'Away', 'NBA')
         self.snapshot = DailySnapshot('nba', self.day.isoformat(), '2030-11-13T04:01:00Z',
             (EventAnalysis(event, projection, None, probability_recommendations(projection, None, sport='nba')),), ())
 
@@ -32,6 +33,14 @@ class DailySnapshotTests(unittest.TestCase):
             self.assertEqual(daily.current_session_day(datetime.fromisoformat(stamp)).isoformat(), expected)
         with self.assertRaises(ValueError):
             daily.current_session_day(datetime(2030, 11, 13))
+
+    def test_noon_and_delayed_after_midnight_target_same_next_calendar_day(self):
+        for stamp in ('2030-11-20T04:00:00+00:00', '2030-11-20T20:00:00+00:00'):
+            day = daily.current_session_day(datetime.fromisoformat(stamp))
+            self.assertEqual(day, date(2030, 11, 20))
+            start, end = session_window(day)
+            self.assertEqual(start.isoformat(), '2030-11-21T00:00:00+08:00')
+            self.assertEqual(end.isoformat(), '2030-11-22T00:00:00+08:00')
 
     def test_saved_visible_then_manual_overrides_and_rerun_preserves(self):
         builder = Mock(return_value=self.snapshot)

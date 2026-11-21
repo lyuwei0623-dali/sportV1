@@ -6,7 +6,6 @@ snapshots and never call a provider or run a model.
 from __future__ import annotations
 
 import hmac
-import math
 import os
 import time
 from datetime import datetime
@@ -21,6 +20,7 @@ from storage import StorageError, create_store
 from ui import render_snapshot, display_team, _time
 from time_utils import filter_snapshot_window, session_label, pregame
 from models import utc_now_iso
+from settlement_math import parse_manual_line
 from auth import verify_password, credential_version
 from diagnostics import record, snapshot_health, VERSION
 from membership import MemberError, MemberRepository
@@ -71,19 +71,8 @@ def _taiwan_day():
     return datetime.now(TZ_TAIPEI).date()
 
 
-def _parse_manual_line(raw: str, label: str) -> float:
-    """Accept normal and full-width plus/minus signs, but never a blank line."""
-
-    cleaned = raw.strip().replace("＋", "+").replace("－", "-").replace("−", "-")
-    if not cleaned:
-        raise ValueError(f"請填入{label}")
-    try:
-        value = float(cleaned)
-    except ValueError as exc:
-        raise ValueError(f"{label}必須是數字，例如 -0.5、+0.5 或 2.5") from exc
-    if not math.isfinite(value):
-        raise ValueError(f"{label}必須是有限數字")
-    return value
+def _parse_manual_line(raw: str, label: str, *, allow_split=False) -> float:
+    return parse_manual_line(raw, label, allow_split=allow_split)
 
 
 def _manual_defaults(snapshot: dict | None) -> dict[str, tuple[float, float]]:
@@ -127,6 +116,8 @@ def _manual_calibration_panel(st, store, automatic: dict, sport: str, day: str, 
         "保留原本資料及已發布校正；不是整張賽程都已人工校正。主隊讓分填負數，例如 -0.5；受讓填正數，例如 +0.5。"
     )
     st.caption("獨贏勝率由已保存的球隊／球員模型決定，不需要也不使用賠率或 EV。")
+    if sport == "football":
+        st.caption("支援足球分盤：-0/0.5 = -0.25、-0.5/1 = -0.75、2/2.5 = 2.25；保存後以等值小數顯示及計算半贏／半輸。")
 
     raw_lines: dict[str, tuple[str, str]] = {}
     notice_key = f"manual_notice_{sport}_{day}"
@@ -159,14 +150,14 @@ def _manual_calibration_panel(st, store, automatic: dict, sport: str, day: str, 
                 spread_raw = st.text_input(
                     f"{home} 主隊讓分",
                     value="" if previous is None else f"{previous[0]:+g}",
-                    placeholder="例如 -0.5 或 +0.5",
+                    placeholder="例如 -0/0.5 或 -0.5/1" if sport == "football" else "例如 -0.5 或 +0.5",
                     key=f"manual_spread_{sport}_{day}_{event_id}",
                 )
             with right:
                 total_raw = st.text_input(
                     "大小總分",
                     value="" if previous is None else f"{previous[1]:g}",
-                    placeholder="例如 2.5",
+                    placeholder="例如 2/2.5 或 2.5/3" if sport == "football" else "例如 2.5",
                     key=f"manual_total_{sport}_{day}_{event_id}",
                 )
             raw_lines[event_id] = (spread_raw, total_raw)
@@ -179,7 +170,8 @@ def _manual_calibration_panel(st, store, automatic: dict, sport: str, day: str, 
         for event_id, raw in raw_lines.items():
             if not raw[0].strip() or not raw[1].strip():
                 continue
-            pair = (_parse_manual_line(raw[0], "主隊讓分"), _parse_manual_line(raw[1], "大小總分"))
+            pair = (_parse_manual_line(raw[0], "主隊讓分", allow_split=sport == "football"),
+                    _parse_manual_line(raw[1], "大小總分", allow_split=sport == "football"))
             if pair != defaults.get(event_id):
                 parsed_lines[event_id] = pair
         if not parsed_lines:
@@ -200,10 +192,11 @@ def _manual_calibration_panel(st, store, automatic: dict, sport: str, day: str, 
 def _member_page(store) -> None:
     _brand()
     st.caption("每日台灣時間中午 12:00 開始更新賽事，儲存完成後即可查詢；人工校正版優先顯示。")
+    st.caption("選擇查詢日後，顯示隔日台灣時間 00:00～23:59 的賽事。")
     st.caption("排程或資料來源可能延遲，請以所選快照的實際建立時間為準。")
     sport_label = st.radio("賽事類別", ["MLB", "NBA", "歐洲足球"], horizontal=True)
     sport = {"MLB": "mlb", "NBA": "nba", "歐洲足球": "football"}[sport_label]
-    selected = st.date_input("賽事日（當晚＋隔日凌晨／上午）", _taiwan_day())
+    selected = st.date_input("查詢日（查看隔日全天賽事）", _taiwan_day())
     st.caption(session_label(selected))
     snapshot, label = store.get_member_snapshot(sport, selected.isoformat())
     if not snapshot:
@@ -222,7 +215,7 @@ def _admin_page(store, storage_label: str) -> None:
         st.caption("資料庫唯讀端點檢查通過；不代表寫入權限或既有快照可見性已驗證。")
     sport_label = st.radio("管理項目", ["MLB", "NBA", "歐洲足球"], horizontal=True, key="admin_sport")
     sport = {"MLB": "mlb", "NBA": "nba", "歐洲足球": "football"}[sport_label]
-    selected = st.date_input("建立哪個賽事日的快照", _taiwan_day(), key="admin_day")
+    selected = st.date_input("快照查詢日（抓取隔日全天賽事）", _taiwan_day(), key="admin_day")
     st.caption(session_label(selected))
     day = selected.isoformat()
     st.info("後台抓取賽程、球隊資料與盤口／賠率。已開賽的預測鎖定；缺線不當實盤。模型目前未完成樣本外校準，顯示估計機率與 PASS，不宣稱已驗證優勢。")
