@@ -749,13 +749,17 @@ def fetch_final_results(sport: str, day: date) -> dict[str, dict[str, Any]]:
                     params={"dates": source_day.strftime("%Y%m%d"), "limit": 100},
                 )
                 for item in payload.get("events", []):
-                    status = ((item.get("status") or {}).get("type") or {}).get("name", "")
-                    competitors = ((item.get("competitions") or [{}])[0].get("competitors") or [])
+                    competition = (item.get("competitions") or [{}])[0]
+                    statuses = [s for s in (item.get("status"), competition.get("status")) if s]
+                    if not statuses or not all(_espn_regulation_final(s) for s in statuses):
+                        continue
+                    competitors = competition.get("competitors") or []
                     home = next((row for row in competitors if row.get("homeAway") == "home"), {})
                     away = next((row for row in competitors if row.get("homeAway") == "away"), {})
-                    if (status != "STATUS_FINAL" or competition_period(item) != 2
-                            or not taiwan_day_matches(item.get("date"), day)
-                            or home.get("score") is None or away.get("score") is None):
+                    if (not item.get("id") or not taiwan_day_matches(item.get("date"), day)
+                            or not all(str(team.get("score", "")).isascii()
+                                       and str(team.get("score", "")).isdigit()
+                                       for team in (home, away))):
                         continue
                     results[f"football:espn:{espn_league}:{item.get('id')}"] = {
                         "status": "final", "home_score": int(home["score"]), "away_score": int(away["score"]),
@@ -764,10 +768,12 @@ def fetch_final_results(sport: str, day: date) -> dict[str, dict[str, Any]]:
     raise ProviderError("不支援的賽事種類")
 
 
-def competition_period(item: dict) -> int:
-    # When ESPN cannot prove regulation-only result, leave ET/PK unsettled.
-    status = item.get("status") or (item.get("competitions") or [{}])[0].get("status") or {}
-    return int(status.get("period") or 0)
+def _espn_regulation_final(status: dict) -> bool:
+    kind = status.get("type") or {}
+    return (kind.get("name") in {"STATUS_FULL_TIME", "STATUS_FINAL"}
+            and str(status.get("period")) == "2"
+            and kind.get("completed", True) is True
+            and kind.get("state", "post") == "post")
 
 def fetch_odds(sport_key: str, *, regions: str | None = None) -> list[dict[str, Any]]:
     """Fetch lines and decimal prices; h2h consumes an extra market quota."""

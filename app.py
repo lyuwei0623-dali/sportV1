@@ -272,7 +272,9 @@ def _admin_page(store, storage_label: str) -> None:
                     if member_snapshot and member_label in {"人工校正正式推薦", "管理員確認的自動推薦"}:
                         published, published_count = settle_snapshot(filter_snapshot_window(member_snapshot), results=results)
                     if not auto_count and not published_count:
-                        st.info("目前沒有已結束且可核對的賽事；快照沒有變更。")
+                        st.session_state["last_diagnostic"] = record("settlement", sport=sport, event_count=0)
+                        st.info(f"{session_label(selected)}：本次未配對到可結算的完賽比分，快照未變更。"
+                                + ("足球僅採相同賽事編號的正規 90 分鐘比分（含補時）。" if sport == "football" else ""))
                     else:
                         store.save_settled_snapshots(sport, day, settled_auto, published)
                         st.session_state["last_diagnostic"] = record("settlement",sport=sport,event_count=max(auto_count,published_count))
